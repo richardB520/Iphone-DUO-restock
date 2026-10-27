@@ -23,7 +23,11 @@ python3 -m duo_restock test-notify   # 测试推送能不能收到
 python3 -m duo_restock run           # 开始持续监控
 ```
 
-运行后打开 <http://127.0.0.1:8765> 就能看到网页看板。
+运行后打开 <http://127.0.0.1:8765> 就能看到网页看板。看板是 `run` 命令自己启动的，所以终端窗口要一直开着；如果浏览器显示 “refused to connect”，说明监控程序没在运行，或者启动时报错退出了，看一下终端里的输出。
+
+> **Mac 用户注意**：系统自带的 `python3` 是 3.9，版本太旧，请先 `brew install python@3.12`，然后用 `python3.12` 运行上面的命令。
+> 也可以直接在 Finder 里双击 `start.command`：它会自动找合适的 Python，第一次运行时生成 `config.toml`，之后会启动监控并打开看板。
+> 如果双击后提示「无法验证开发者」，右键点 `start.command` → 打开。
 
 也可以先安装成命令：`pip install .`，之后直接用 `duo-restock run`。
 
