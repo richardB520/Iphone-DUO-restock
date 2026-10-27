@@ -125,12 +125,25 @@ def email(cfg: dict, msg: Message) -> None:
         server.send_message(em)
 
 
+def _applescript_str(text: str) -> str:
+    # json.dumps would turn Chinese into \uXXXX escapes, which AppleScript prints literally.
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _powershell_str(text: str) -> str:
+    # Single-quoted PowerShell strings expand nothing; only ' needs doubling.
+    return "'" + text.replace("'", "''") + "'"
+
+
 def desktop(cfg: dict, msg: Message) -> None:
     sys.stdout.write("\a")
     sys.stdout.flush()
     system = platform.system()
     if system == "Darwin":
-        script = f"display notification {json.dumps(msg.body)} with title {json.dumps(msg.title)} sound name \"Glass\""
+        script = (
+            f"display notification {_applescript_str(msg.body)} "
+            f"with title {_applescript_str(msg.title)} sound name \"Glass\""
+        )
         subprocess.run(["osascript", "-e", script], check=False)
         if cfg.get("say"):
             subprocess.run(["say", msg.title], check=False)
@@ -141,7 +154,7 @@ def desktop(cfg: dict, msg: Message) -> None:
             "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null;"
             "$n = New-Object System.Windows.Forms.NotifyIcon;"
             "$n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true;"
-            f"$n.ShowBalloonTip(10000, {json.dumps(msg.title)}, {json.dumps(msg.body)}, 'Info');"
+            f"$n.ShowBalloonTip(10000, {_powershell_str(msg.title)}, {_powershell_str(msg.body)}, 'Info');"
             "Start-Sleep -Seconds 10"
         )
         subprocess.Popen(["powershell", "-NoProfile", "-Command", ps])

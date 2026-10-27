@@ -5,3 +5,4 @@ __pycache__/
 config.toml
 state.json
 state.tmp
+monitor.log

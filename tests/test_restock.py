@@ -350,6 +350,15 @@ class NotifierTests(unittest.TestCase):
         self.assertEqual(results["nope"], "unknown channel")
         self.assertEqual(len(calls), 1)
 
+    def test_macos_notification_keeps_chinese_readable(self):
+        from unittest import mock
+
+        with mock.patch("platform.system", return_value="Darwin"), mock.patch("subprocess.run") as run:
+            notifiers.desktop({}, notifiers.Message('🍏 有货了', 'Fifth "Ave" 有货'))
+        script = run.call_args.args[0][2]
+        self.assertIn('display notification "Fifth \\"Ave\\" 有货" with title "🍏 有货了"', script)
+        self.assertNotIn("\\u", script)
+
     def test_missing_setting_is_reported(self):
         results = notifiers.send_all({"bark": {}}, notifiers.Message("t", "b"))
         self.assertIn("missing", results["bark"])
