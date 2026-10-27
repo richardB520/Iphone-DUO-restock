@@ -86,7 +86,8 @@ function render(s) {
 
   const available = s.pickup.filter((p) => p.available);
   const banner = $("banner");
-  if (s.last_error) { banner.className = "banner err"; banner.textContent = "⚠️ " + s.last_error; }
+  if (s.sleeping_until) { banner.className = "banner err"; banner.textContent = `🌙 休息中，每天 ${s.active_hours} 监控，${fmt(s.sleeping_until)} 自动开始`; }
+  else if (s.last_error) { banner.className = "banner err"; banner.textContent = "⚠️ " + s.last_error; }
   else if (available.length) { banner.className = "banner ok"; banner.textContent = `✅ 现在有 ${available.length} 处可取货！`; }
   else { banner.className = "banner"; }
 

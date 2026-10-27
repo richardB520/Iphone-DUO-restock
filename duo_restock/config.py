@@ -33,6 +33,9 @@ class Config:
     max_backoff: float = 1800.0
     notify_sold_out: bool = False
     remind_minutes: float = 0.0
+    # Daily monitoring window in local time as (start, end) minutes after midnight;
+    # None means around the clock.
+    active_hours: tuple[int, int] | None = None
     state_file: Path = Path("state.json")
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8765
@@ -108,6 +111,8 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
     if interval < 20:
         raise ConfigError("[monitor] interval_seconds below 20 will get you blocked by Apple")
 
+    active_hours = _parse_active_hours(monitor.get("active_hours"))
+
     state_file = Path(monitor.get("state_file", "state.json"))
     if not state_file.is_absolute():
         state_file = base_dir / state_file
@@ -129,8 +134,28 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
         max_backoff=float(monitor.get("max_backoff_seconds", 1800)),
         notify_sold_out=bool(monitor.get("notify_sold_out", False)),
         remind_minutes=float(monitor.get("remind_minutes", 0)),
+        active_hours=active_hours,
         state_file=state_file,
         dashboard_host=str(dashboard.get("host", "127.0.0.1")),
         dashboard_port=int(dashboard.get("port", 8765)),
         notify=notify,
     )
+
+
+def _parse_active_hours(raw) -> tuple[int, int] | None:
+    if not raw:
+        return None
+    if not (isinstance(raw, list) and len(raw) == 2):
+        raise ConfigError('[monitor] active_hours must look like ["05:00", "10:00"]')
+    minutes = []
+    for value in raw:
+        try:
+            hour, minute = (int(x) for x in str(value).split(":"))
+        except ValueError:
+            raise ConfigError(f"[monitor] active_hours: {value!r} is not a HH:MM time") from None
+        if not (0 <= hour <= 24 and 0 <= minute < 60) or hour * 60 + minute > 1440:
+            raise ConfigError(f"[monitor] active_hours: {value!r} is not a valid time")
+        minutes.append(hour * 60 + minute)
+    if minutes[0] == minutes[1]:
+        raise ConfigError("[monitor] active_hours start and end must differ")
+    return minutes[0], minutes[1]

@@ -8,6 +8,7 @@ import random
 import threading
 import time
 from collections import deque
+from datetime import datetime, timedelta
 from dataclasses import asdict
 from typing import Callable
 
@@ -48,6 +49,8 @@ class Monitor:
             "last_check": None,
             "next_check": None,
             "last_error": None,
+            "sleeping_until": None,
+            "active_hours": _format_hours(cfg.active_hours),
             "checks": 0,
             "pickup": [],
             "events": [],
@@ -156,6 +159,21 @@ class Monitor:
 
     # -- loop ------------------------------------------------------------
 
+    def seconds_until_active(self) -> float:
+        """0 inside the daily window (or with no window), else seconds until it next opens."""
+        if not self.cfg.active_hours:
+            return 0.0
+        start, end = self.cfg.active_hours
+        now = datetime.fromtimestamp(self.clock())
+        minute = now.hour * 60 + now.minute
+        inside = start <= minute < end if start < end else minute >= start or minute < end
+        if inside:
+            return 0.0
+        opens = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(minutes=start)
+        if opens <= now:
+            opens += timedelta(days=1)
+        return (opens - now).total_seconds()
+
     def next_delay(self) -> float:
         if self.blocks:
             cooldown = BLOCK_COOLDOWNS[min(self.blocks, len(BLOCK_COOLDOWNS)) - 1]
@@ -174,6 +192,21 @@ class Monitor:
             self.cfg.interval,
         )
         while not stop.is_set():
+            idle = self.seconds_until_active()
+            if idle:
+                wake = self.clock() + idle
+                log.info("outside active hours - sleeping until %s", datetime.fromtimestamp(wake).strftime("%H:%M"))
+                with self.lock:
+                    self.status["sleeping_until"] = wake
+                    self.status["next_check"] = wake
+                # A block from yesterday says nothing about today.
+                self.failures = self.blocks = 0
+                # Re-check the wall clock every minute: the wait timer can stall
+                # while the Mac sleeps, which would start the window late.
+                stop.wait(min(idle, 60))
+                continue
+            with self.lock:
+                self.status["sleeping_until"] = None
             try:
                 self.poll_once()
                 self.failures = 0
@@ -201,3 +234,9 @@ class Monitor:
     def snapshot(self) -> dict:
         with self.lock:
             return json.loads(json.dumps(self.status))
+
+
+def _format_hours(hours: tuple[int, int] | None) -> str | None:
+    if not hours:
+        return None
+    return "–".join(f"{m // 60:02d}:{m % 60:02d}" for m in hours)

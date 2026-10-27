@@ -56,6 +56,7 @@ color = "nightsky"     # nightsky（Night Sky）/ starwhite（Star White）
 | `apple.store` | 也可以只查一家门店，填门店编号，例如 `R095` |
 | `apple.store_filter` | 只关心哪些门店，例如 `["R095", "R227"]` |
 | `monitor.interval_seconds` | 检查间隔，默认 60 秒，最低 20 秒。每轮所有型号合成一个请求 |
+| `monitor.active_hours` | 每天只在这个时间段监控，例如 `["05:00", "10:00"]`（电脑本地时间），其余时间不发请求；不写就是全天 |
 | `monitor.remind_minutes` | 一直有货时每隔多少分钟再提醒一次，0 表示只在刚补货时提醒一次 |
 | `monitor.notify_sold_out` | 卖完时是否也推送 |
 | `dashboard.host` | 改成 `0.0.0.0` 后，同一 Wi-Fi 下的手机也能打开看板 |
@@ -93,6 +94,16 @@ tmux new -s duo 'python3 -m duo_restock run'
 ```
 
 Mac 记得在「系统设置 → 电池」里关掉自动睡眠，不然电脑睡着了就收不到提醒。
+
+如果设置了 `active_hours`、晚上想让 Mac 睡觉，可以让它每天定时自己醒来（需要输入开机密码）：
+
+```bash
+sudo pmset repeat wakeorpoweron MTWRFSU 04:55:00   # 每天 4:55 唤醒
+pmset -g sched                                    # 查看已设置的计划
+sudo pmset repeat cancel                          # 取消
+```
+
+定时唤醒后，Mac 要接着电源、保持亮屏或防睡眠，才能一直跑到 10 点。
 
 ## 常见问题
 

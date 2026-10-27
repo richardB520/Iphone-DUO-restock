@@ -227,6 +227,14 @@ class ConfigTests(unittest.TestCase):
         with self.assertRaises(config.ConfigError):
             config.from_dict({"apple": {"location": "1"}, "products": [{"color": "nightsky"}]})
 
+    def test_active_hours_validation(self):
+        base = {"apple": {"location": "1"}, "products": [{"part": "X"}]}
+        self.assertEqual(config.from_dict({**base, "monitor": {"active_hours": ["05:00", "10:00"]}}).active_hours, (300, 600))
+        self.assertIsNone(config.from_dict(base).active_hours)
+        for bad in (["5am", "10:00"], ["05:00"], ["05:00", "05:00"], ["25:00", "10:00"]):
+            with self.assertRaises(config.ConfigError, msg=bad):
+                config.from_dict({**base, "monitor": {"active_hours": bad}})
+
     def test_rejects_too_fast_interval(self):
         with self.assertRaises(config.ConfigError):
             config.from_dict(
@@ -317,6 +325,49 @@ class MonitorTests(unittest.TestCase):
         m.cfg.store_filter = ["R227"]
         self.assertEqual(m.poll_once(), [])
         self.assertEqual({p["store_number"] for p in m.snapshot()["pickup"]}, {"R227"})
+
+    def test_active_hours_window(self):
+        from datetime import datetime
+
+        m = self.monitor(FakeApple(), active_hours=["05:00", "10:00"])
+        at = lambda h, mi=0: datetime(2026, 10, 27, h, mi).timestamp()
+        self.now = at(5)
+        self.assertEqual(m.seconds_until_active(), 0)
+        self.now = at(9, 59)
+        self.assertEqual(m.seconds_until_active(), 0)
+        self.now = at(4, 30)
+        self.assertEqual(m.seconds_until_active(), 30 * 60)
+        self.now = at(10)
+        self.assertEqual(m.seconds_until_active(), 19 * 3600)
+        self.assertEqual(m.snapshot()["active_hours"], "05:00–10:00")
+
+    def test_active_hours_across_midnight(self):
+        from datetime import datetime
+
+        m = self.monitor(FakeApple(), active_hours=["22:00", "02:00"])
+        self.now = datetime(2026, 10, 27, 23, 0).timestamp()
+        self.assertEqual(m.seconds_until_active(), 0)
+        self.now = datetime(2026, 10, 27, 1, 0).timestamp()
+        self.assertEqual(m.seconds_until_active(), 0)
+        self.now = datetime(2026, 10, 27, 12, 0).timestamp()
+        self.assertEqual(m.seconds_until_active(), 10 * 3600)
+
+    def test_run_sleeps_outside_active_hours_without_polling(self):
+        from datetime import datetime
+
+        class OneShot(threading.Event):
+            def wait(self, timeout=None):
+                self.waited = timeout
+                self.set()
+                return True
+
+        m = self.monitor(FakeApple(), active_hours=["05:00", "10:00"])
+        self.now = datetime(2026, 10, 27, 3, 0).timestamp()
+        stop = OneShot()
+        m.run(stop)
+        self.assertEqual(stop.waited, 60)
+        self.assertEqual(m.snapshot()["checks"], 0)
+        self.assertEqual(m.snapshot()["sleeping_until"], datetime(2026, 10, 27, 5, 0).timestamp())
 
     def test_block_cooldowns_then_error_backoff(self):
         m = self.monitor(FakeApple())
