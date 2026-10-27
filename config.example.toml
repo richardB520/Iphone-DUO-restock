@@ -1,0 +1,83 @@
+# iPhone Duo 补货监控配置
+# 复制为 config.toml 后修改：cp config.example.toml config.toml
+
+[apple]
+# 地区: us / cn / hk / hk-zh / tw / jp / sg / ca / uk / au
+region = "us"
+# 按位置搜索附近门店：美国填邮编；中国大陆填 "省 市 区"，例如 "上海 上海 黄浦区"
+location = "10001"
+# 或者指定一家门店编号（例如 R095），会同时搜索它附近的店；填了 store 会优先于 location
+store = ""
+search_nearby = true
+# 只关心这些门店（留空 = 接口返回的所有附近门店）
+store_filter = []
+
+# 想监控的型号，可以写多个。part 是 Apple 的型号号码（Part Number）。
+# 获取方法见 README「如何找到型号号码」。下面是占位符，请替换成真实号码。
+[[products]]
+part = "MXXX1LL/A"
+name = "iPhone Duo 256GB 黑色"
+# 有货时推送里附带的购买链接（可选）
+url = "https://www.apple.com/shop/buy-iphone"
+
+[[products]]
+part = "MXXX2LL/A"
+name = "iPhone Duo 512GB 白色"
+
+[monitor]
+# 检查间隔（秒），不要低于 20，太快会被 Apple 限流
+interval_seconds = 60
+# 每次在间隔上随机加 0~N 秒，避免请求过于规律
+jitter_seconds = 15
+# 被限流 / 出错时指数退避的上限
+max_backoff_seconds = 900
+# 有货 → 无货时也推送
+notify_sold_out = false
+# 持续有货时每隔多少分钟再提醒一次（0 = 只在刚补货时提醒一次）
+remind_minutes = 0
+state_file = "state.json"
+
+[dashboard]
+# 本地网页看板，运行后打开 http://127.0.0.1:8765
+# 想用手机在同一 Wi-Fi 下查看就改成 "0.0.0.0"
+host = "127.0.0.1"
+port = 8765
+
+# ---- 通知渠道：去掉想用的渠道前面的 #，填好参数即可，可以同时开多个 ----
+
+[notify.desktop]
+# 电脑本机弹窗 + 提示音（macOS / Linux / Windows）
+enabled = true
+say = false          # macOS 上同时语音播报
+
+# [notify.bark]      # iPhone 推送，App Store 搜索 Bark
+# url = "https://api.day.app/你的key"
+# sound = "alarm"
+# level = "timeSensitive"   # critical 可在静音模式下响铃
+
+# [notify.serverchan] # 微信推送 https://sct.ftqq.com
+# sendkey = "SCTxxxx"
+
+# [notify.pushplus]   # 微信推送 https://www.pushplus.plus
+# token = "xxxx"
+
+# [notify.telegram]
+# bot_token = "123456:ABC..."
+# chat_id = "123456789"
+
+# [notify.ntfy]       # https://ntfy.sh 安卓 / iOS 都有 App
+# topic = "my-iphone-duo-alerts"
+# server = "https://ntfy.sh"
+
+# [notify.discord]
+# webhook_url = "https://discord.com/api/webhooks/..."
+
+# [notify.webhook]    # 自定义：POST JSON {title, body, url}
+# url = "https://example.com/hook"
+
+# [notify.email]
+# host = "smtp.gmail.com"
+# port = 465
+# username = "you@gmail.com"
+# password = "应用专用密码"
+# to = "you@gmail.com"

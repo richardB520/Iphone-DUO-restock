@@ -1,0 +1,57 @@
+{
+  "head": {"status": "200", "data": {}},
+  "body": {
+    "content": {
+      "pickupMessage": {
+        "stores": [
+          {
+            "storeNumber": "R095",
+            "storeName": "Fifth Avenue",
+            "city": "New York",
+            "storeDistanceWithUnit": "0.9 mi",
+            "partsAvailability": {
+              "MTEST1LL/A": {
+                "pickupDisplay": "available",
+                "pickupSearchQuote": "<span class=\"nowrap\">Available</span> Today",
+                "buyability": {"isBuyable": true},
+                "messageTypes": {"regular": {"storePickupProductTitle": "iPhone Duo 256GB Black"}}
+              },
+              "MTEST2LL/A": {
+                "pickupDisplay": "unavailable",
+                "pickupSearchQuote": "Currently unavailable",
+                "messageTypes": {"regular": {"storePickupProductTitle": "iPhone Duo 512GB White"}}
+              }
+            }
+          },
+          {
+            "storeNumber": "R227",
+            "storeName": "SoHo",
+            "city": "New York",
+            "storeDistanceWithUnit": "2.1 mi",
+            "partsAvailability": {
+              "MTEST1LL/A": {
+                "pickupDisplay": "unavailable",
+                "pickupSearchQuote": "Currently unavailable",
+                "messageTypes": {"regular": {"storePickupProductTitle": "iPhone Duo 256GB Black"}}
+              },
+              "MTEST2LL/A": {
+                "pickupDisplay": "ineligible",
+                "pickupSearchQuote": "Not available for pickup",
+                "messageTypes": {"regular": {"storePickupProductTitle": "iPhone Duo 512GB White"}}
+              }
+            }
+          }
+        ]
+      },
+      "deliveryMessage": {
+        "MTEST1LL/A": {
+          "regular": {
+            "isBuyable": true,
+            "deliveryOptionMessages": [{"displayName": "Delivers Jan 25 &ndash; Feb 1"}]
+          }
+        },
+        "geoLocated": false
+      }
+    }
+  }
+}

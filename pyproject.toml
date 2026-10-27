@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "duo-restock"
+version = "0.1.0"
+description = "Monitor Apple Store pickup and delivery availability for iPhone Duo and push restock alerts"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+duo-restock = "duo_restock.cli:main"
+
+[tool.setuptools]
+packages = ["duo_restock"]
+
+[tool.setuptools.package-data]
+duo_restock = ["dashboard.html"]
