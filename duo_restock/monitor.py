@@ -19,6 +19,10 @@ log = logging.getLogger(__name__)
 Checker = Callable[..., apple.CheckResult]
 Sender = Callable[[dict, notifiers.Message], dict]
 
+# After Apple blocks us, wait this long before probing again (then 10, 20, 30 min).
+# Carrying on at the normal pace only pushes the block further out.
+BLOCK_COOLDOWNS = [300, 600, 1200, 1800]
+
 
 class Monitor:
     def __init__(
@@ -32,9 +36,11 @@ class Monitor:
         self.checker = checker
         self.sender = sender
         self.clock = clock
+        self.session = apple.Session(cfg.region)
         self.lock = threading.Lock()
         self.state: dict[str, dict] = self._load_state()
         self.failures = 0
+        self.blocks = 0
         self.status: dict = {
             "region": cfg.region,
             "location": cfg.store or cfg.location,
@@ -44,7 +50,6 @@ class Monitor:
             "last_error": None,
             "checks": 0,
             "pickup": [],
-            "delivery": [],
             "events": [],
         }
         self.events: deque[dict] = deque(maxlen=100)
@@ -67,18 +72,19 @@ class Monitor:
     def poll_once(self) -> list[dict]:
         """Run one availability check. Returns the events it produced."""
         now = self.clock()
+        # One request covers every watched model, which keeps us well under
+        # Apple's per-IP request budget.
         result = self.checker(
-            region=self.cfg.region,
+            self.session,
             parts=self.cfg.parts,
             location=self.cfg.location,
             store=self.cfg.store,
-            search_nearby=self.cfg.search_nearby,
         )
         pickup = [
             a for a in result.pickup if not self.cfg.store_filter or a.store_number in self.cfg.store_filter
         ]
 
-        events = self._diff_pickup(pickup, now) + self._diff_delivery(result.delivery, now)
+        events = self._diff_pickup(pickup, now)
         self._save_state()
 
         with self.lock:
@@ -86,10 +92,8 @@ class Monitor:
             self.status["last_error"] = None
             self.status["checks"] += 1
             self.status["pickup"] = [
-                {**asdict(a), "name": self.cfg.product_name(a.part)} for a in pickup
-            ]
-            self.status["delivery"] = [
-                {**asdict(d), "name": self.cfg.product_name(d.part)} for d in result.delivery
+                {**asdict(a), "available": a.available, "name": self.cfg.product_name(a.part)}
+                for a in pickup
             ]
             self.events.extendleft(events)
             self.status["events"] = list(self.events)
@@ -133,49 +137,18 @@ class Monitor:
             self.state[a.key] = entry
         return events
 
-    def _diff_delivery(self, delivery: list[apple.DeliveryQuote], now: float) -> list[dict]:
-        events = []
-        for d in delivery:
-            key = f"{d.part}@delivery"
-            prev = self.state.get(key)
-            self.state[key] = {"quote": d.quote, "buyable": d.buyable}
-            # Only a change matters; the first observation just records a baseline.
-            if prev is not None and prev.get("quote") != d.quote and d.quote:
-                events.append(
-                    {
-                        "time": now,
-                        "kind": "delivery_changed",
-                        "part": d.part,
-                        "name": self.cfg.product_name(d.part),
-                        "store": "",
-                        "store_number": "",
-                        "city": "",
-                        "quote": d.quote,
-                        "previous": prev.get("quote", ""),
-                    }
-                )
-        return events
-
     def _notify(self, events: list[dict]) -> None:
         in_stock = [e for e in events if e["kind"] in ("in_stock", "still_in_stock")]
-        if in_stock:
-            title = f"🍏 iPhone Duo 有货了！({len(in_stock)} 处)"
-        elif any(e["kind"] == "delivery_changed" for e in events):
-            title = "📦 iPhone Duo 送货时间变了"
-        else:
-            title = "iPhone Duo 已售罄"
+        title = f"🍏 iPhone Duo 有货了！({len(in_stock)} 处)" if in_stock else "iPhone Duo 已售罄"
 
         lines = []
         for e in events:
-            if e["kind"] == "delivery_changed":
-                lines.append(f"📦 {e['name']}：送货 {e['previous'] or '?'} → {e['quote']}")
-            else:
-                icon = "❌" if e["kind"] == "sold_out" else "✅"
-                where = f"{e['store']}（{e['city']}）" if e["city"] else e["store"]
-                lines.append(f"{icon} {e['name']} @ {where} {e['quote']}".rstrip())
+            icon = "❌" if e["kind"] == "sold_out" else "✅"
+            where = f"{e['store']}（{e['city']}）" if e["city"] else e["store"]
+            lines.append(f"{icon} {e['name']} @ {where} {e['quote']}".rstrip())
 
         first = events[0]["part"]
-        url = self.cfg.product_url(first) or f"{apple.site_base(self.cfg.region)}/shop/buy-iphone"
+        url = self.cfg.product_url(first) or apple.buy_page(self.cfg.region)
         msg = notifiers.Message(title=title, body="\n".join(lines), url=url)
         log.info("%s\n%s", title, msg.body)
         if self.cfg.notify:
@@ -184,6 +157,9 @@ class Monitor:
     # -- loop ------------------------------------------------------------
 
     def next_delay(self) -> float:
+        if self.blocks:
+            cooldown = BLOCK_COOLDOWNS[min(self.blocks, len(BLOCK_COOLDOWNS)) - 1]
+            return min(cooldown, self.cfg.max_backoff)
         if self.failures:
             return min(self.cfg.interval * (2 ** self.failures), self.cfg.max_backoff)
         return self.cfg.interval + random.uniform(0, self.cfg.jitter)
@@ -201,11 +177,19 @@ class Monitor:
             try:
                 self.poll_once()
                 self.failures = 0
+                self.blocks = 0
                 available = sum(1 for p in self.status["pickup"] if p["available"])
                 log.info("check #%d ok - %d store/model combination(s) available", self.status["checks"], available)
             except apple.AppleError as e:
-                self.failures += 1
-                hint = " (Apple is rate limiting - backing off)" if e.throttled else ""
+                if e.throttled:
+                    self.blocks += 1
+                    hint = (
+                        f"（Apple 拦截了请求，{self.next_delay() / 60:.0f} 分钟后再试；"
+                        "同一网络下的其他监控程序或频繁刷新官网也会占用额度）"
+                    )
+                else:
+                    self.failures += 1
+                    hint = ""
                 log.warning("check failed: %s%s", e, hint)
                 with self.lock:
                     self.status["last_error"] = str(e) + hint

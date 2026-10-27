@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import catalog
 from .apple import REGIONS
 
 
@@ -25,12 +26,11 @@ class Config:
     region: str
     location: str
     store: str
-    search_nearby: bool
     store_filter: list[str]
     products: list[Product]
     interval: float = 60.0
     jitter: float = 15.0
-    max_backoff: float = 900.0
+    max_backoff: float = 1800.0
     notify_sold_out: bool = False
     remind_minutes: float = 0.0
     state_file: Path = Path("state.json")
@@ -85,11 +85,24 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
     products = []
     for i, raw in enumerate(data.get("products", [])):
         part = str(raw.get("part", "")).strip()
+        name = str(raw.get("name", "")).strip()
         if not part:
-            raise ConfigError(f"[[products]] entry #{i + 1} is missing 'part'")
-        products.append(Product(part=part, name=str(raw.get("name", part)), url=str(raw.get("url", ""))))
+            capacity, color = str(raw.get("capacity", "")), str(raw.get("color", ""))
+            if not capacity or not color:
+                raise ConfigError(
+                    f"[[products]] entry #{i + 1} needs either 'part' or both 'capacity' and 'color'"
+                )
+            part = catalog.lookup(region, capacity, color) or ""
+            if not part:
+                raise ConfigError(
+                    f"[[products]] entry #{i + 1}: no built-in part number for {capacity} {color} "
+                    f"in region {region} - run `python3 -m duo_restock models` to see the choices, "
+                    "or set 'part' directly"
+                )
+            name = name or catalog.display_name(capacity, color)
+        products.append(Product(part=part, name=name or part, url=str(raw.get("url", ""))))
     if not products:
-        raise ConfigError("add at least one [[products]] entry with a part number")
+        raise ConfigError("add at least one [[products]] entry (capacity + color, or part)")
 
     interval = float(monitor.get("interval_seconds", 60))
     if interval < 20:
@@ -109,12 +122,11 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
         region=region,
         location=location,
         store=store,
-        search_nearby=bool(apple.get("search_nearby", True)),
         store_filter=[str(s) for s in apple.get("store_filter", [])],
         products=products,
         interval=interval,
         jitter=float(monitor.get("jitter_seconds", 15)),
-        max_backoff=float(monitor.get("max_backoff_seconds", 900)),
+        max_backoff=float(monitor.get("max_backoff_seconds", 1800)),
         notify_sold_out=bool(monitor.get("notify_sold_out", False)),
         remind_minutes=float(monitor.get("remind_minutes", 0)),
         state_file=state_file,

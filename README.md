@@ -1,13 +1,13 @@
 # iPhone Duo 补货监控
 
-监控 Apple Store 官网上 **iPhone Duo** 的门店取货和网上送货情况。一有货就推送到手机或电脑，同时带一个本地网页看板，实时显示各门店的库存。
+监控 Apple Store 官网上 **iPhone Duo** 的门店取货情况。一有货就推送到手机或电脑，同时带一个本地网页看板，实时显示各门店的库存。
 
 - ✅ **门店取货监控**：可以同时监控多个型号，覆盖附近所有门店，或只看你指定的几家
-- 📦 **送货时间监控**：网上订购的送货日期一变（比如从 “1 月底” 变成 “明天送达”）就提醒你
+- 🏷️ **内置型号号码**：10 个地区、8 种容量和颜色组合都已内置，配置里写 `512gb` + `nightsky` 就行，不用自己去官网找号码
 - 🔔 **9 种通知渠道**：Bark（iPhone 推送）、Server 酱 / PushPlus（微信）、Telegram、ntfy、Discord、自定义 Webhook、邮件、电脑弹窗和提示音
 - 🖥️ **网页看板**：门店 × 型号的有货表格、补货动态记录，浏览器里也能弹提醒、响提示音
 - 🌏 **多地区**：美国、中国大陆、香港、台湾、日本、新加坡、加拿大、英国、澳大利亚
-- 🛡️ **防限流**：请求间隔随机抖动，被 Apple 限流时自动指数退避；只在状态变化时推送，不会刷屏
+- 🛡️ **防拦截**：像浏览器一样先拿会话 cookie，每轮只发一个请求；被 Apple 拦截后冷却 5 → 10 → 20 → 30 分钟再试；只在状态变化时推送，不会刷屏
 - 📦 **零依赖**：只需要 Python 3.11+，不用装任何第三方库
 
 ![看板截图](docs/dashboard.png)
@@ -31,16 +31,19 @@ python3 -m duo_restock run           # 开始持续监控
 
 也可以先安装成命令：`pip install .`，之后直接用 `duo-restock run`。
 
-## 如何找到型号号码（Part Number）
+## 选择型号
 
-Apple 的库存接口按型号号码查询，每个「容量 + 颜色」组合对应一个号码，格式类似 `MXXXXLL/A`（美国）或 `MXXXXCH/A`（中国大陆）。
+程序已经内置了 iPhone Duo 在各地区的型号号码，在 `config.toml` 里写容量和颜色就行：
 
-1. 用电脑浏览器打开 Apple 官网的 iPhone Duo 购买页面，选好容量和颜色
-2. 按 `F12` 打开开发者工具，切到 **Network（网络）** 标签
-3. 在页面上点 **Check availability / 查看门店是否有货**，随便输个邮编或地区
-4. 在 Network 里搜索 `fulfillment-messages`，点开这个请求，URL 里 `parts.0=` 后面的值就是型号号码（`%2F` 就是 `/`）
+```toml
+[[products]]
+capacity = "512gb"     # 256gb / 512gb / 1tb / 2tb
+color = "nightsky"     # nightsky（Night Sky）/ starwhite（Star White）
+```
 
-把号码填进 `config.toml` 的 `[[products]]` 里。想监控几个组合，就写几个 `[[products]]`。
+想监控几个组合就写几个 `[[products]]`。运行 `python3 -m duo_restock models` 可以查看当前地区的全部型号号码。
+
+如果以后 Apple 出了新颜色、内置表里没有，也可以直接写 `part = "MXXXXLL/A"`。找号码的方法：在官网购买页选好型号，打开浏览器开发者工具的 Network 标签，点「查看门店是否有货」，在 `pickup-message` 请求里找 `parts.0=` 后面的值（`%2F` 就是 `/`）。
 
 ## 配置说明
 
@@ -50,9 +53,9 @@ Apple 的库存接口按型号号码查询，每个「容量 + 颜色」组合�
 | --- | --- |
 | `apple.region` | 地区：`us` `cn` `hk` `hk-zh` `tw` `jp` `sg` `ca` `uk` `au` |
 | `apple.location` | 美国填邮编，例如 `10001`；中国大陆填「省 市 区」，例如 `上海 上海 黄浦区` |
-| `apple.store` | 也可以直接填门店编号，例如 `R095`，会顺带查附近的店 |
+| `apple.store` | 也可以只查一家门店，填门店编号，例如 `R095` |
 | `apple.store_filter` | 只关心哪些门店，例如 `["R095", "R227"]` |
-| `monitor.interval_seconds` | 检查间隔，默认 60 秒，最低 20 秒 |
+| `monitor.interval_seconds` | 检查间隔，默认 60 秒，最低 20 秒。每轮所有型号合成一个请求 |
 | `monitor.remind_minutes` | 一直有货时每隔多少分钟再提醒一次，0 表示只在刚补货时提醒一次 |
 | `monitor.notify_sold_out` | 卖完时是否也推送 |
 | `dashboard.host` | 改成 `0.0.0.0` 后，同一 Wi-Fi 下的手机也能打开看板 |
@@ -72,6 +75,7 @@ Apple 的库存接口按型号号码查询，每个「容量 + 颜色」组合�
 | `python3 -m duo_restock run` | 持续监控，同时启动看板（加 `--no-dashboard` 就不启动看板） |
 | `python3 -m duo_restock check` | 只检查一次，把结果打印出来，不推送 |
 | `python3 -m duo_restock test-notify` | 给所有已启用的渠道发一条测试消息 |
+| `python3 -m duo_restock models` | 列出内置的 iPhone Duo 型号号码（可以加地区，例如 `models cn`） |
 | `python3 -m duo_restock url` | 打印实际请求的 Apple 接口地址，可以贴到浏览器里排查问题 |
 
 所有命令都可以加 `-c 路径` 指定别的配置文件，加 `-v` 输出调试日志。
@@ -93,10 +97,16 @@ Mac 记得在「系统设置 → 电池」里关掉自动睡眠，不然电脑�
 ## 常见问题
 
 **一直显示 `HTTP 541` / `403` / `429`？**
-这是被 Apple 限流了。程序会自动退避，过一会儿再试。如果一直这样，就把 `interval_seconds` 调大（比如 120），或者换个网络。
+这是被 Apple 拦截了。Apple 按出口 IP 计算请求次数，大约连续 30 个请求后就会拦截十几分钟。程序会自动冷却 5 → 10 → 20 → 30 分钟再试。要注意，**同一个网络下的其他补货监控程序、频繁刷新官网也会占用同一份额度**，最好只留一个监控程序在跑。
 
-**`check` 显示「附近没有返回任何门店数据」？**
-通常是型号号码填错了，或者号码和 `region` 不匹配（美国号码以 `LL/A` 结尾，中国大陆以 `CH/A` 结尾）。可以用 `url` 命令打印出接口地址，贴到浏览器里看 Apple 实际返回了什么。
+**为什么不用 `fulfillment-messages` 接口？**
+很多旧教程和项目用的是这个接口，但它现在要求带上浏览器脚本生成的验证令牌，程序直接请求一律返回 541。本程序改用官网「查看是否有货」实际调用的 `retail/pickup-message` 接口，并且先访问购物袋页拿到会话 cookie，就像浏览器那样。
+
+**显示「尚未开放取货」？**
+Apple 还没开放这个型号的到店取货时，所有门店都会这样显示。这不是无货，开放后会自动变成有货或无货。
+
+**`check` 显示 “Apple returned no stores”？**
+通常是 `location` 填错了，或者手动填的 `part` 和 `region` 不匹配（美国号码以 `LL/A` 结尾，中国大陆以 `CH/A` 结尾）。可以用 `url` 命令打印出接口地址，贴到浏览器里看 Apple 实际返回了什么。
 
 **第一次运行就推送了？**
 这是正常的：如果启动时已经有货，会马上提醒你。之后只在状态发生变化时才推送，已经推送过的状态记在 `state.json` 里，重启也不会重复推送。
@@ -111,13 +121,18 @@ python3 -m unittest discover -s tests -v
 
 ```
 duo_restock/
-  apple.py        Apple 库存接口：拼请求地址、解析返回的 JSON
+  apple.py        Apple 取货接口：会话 cookie、请求头、解析返回的 JSON
+  catalog.py      内置的 iPhone Duo 各地区型号号码
   monitor.py      轮询循环：和上次状态比较，决定要不要推送，失败时退避
   notifiers.py    各种推送渠道
   dashboard.py    本地网页看板（dashboard.html）
   config.py       读取并校验 config.toml
   cli.py          命令行入口
 ```
+
+## 致谢
+
+接口地址、会话 cookie、请求预算和冷却策略，以及内置的型号号码，参考了 [ENCHIGO/apple-pickup-watcher](https://github.com/ENCHIGO/apple-pickup-watcher) 的研究和数据（本项目没有复制它的代码）。如果你想要带图形界面、覆盖 iPhone 以外产品的桌面版，可以直接用它。
 
 ## 声明
 

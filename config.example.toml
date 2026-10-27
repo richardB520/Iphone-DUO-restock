@@ -6,31 +6,31 @@
 region = "us"
 # 按位置搜索附近门店：美国填邮编；中国大陆填 "省 市 区"，例如 "上海 上海 黄浦区"
 location = "10001"
-# 或者指定一家门店编号（例如 R095），会同时搜索它附近的店；填了 store 会优先于 location
+# 或者只查一家门店（例如 R095）；填了 store 就不再按 location 搜附近门店
 store = ""
-search_nearby = true
 # 只关心这些门店（留空 = 接口返回的所有附近门店）
 store_filter = []
 
-# 想监控的型号，可以写多个。part 是 Apple 的型号号码（Part Number）。
-# 获取方法见 README「如何找到型号号码」。下面是占位符，请替换成真实号码。
+# 想监控的型号，可以写多个。
+# capacity: 256gb / 512gb / 1tb / 2tb；color: nightsky（Night Sky）/ starwhite（Star White）
+# 程序内置了各地区的型号号码，运行 `python3 -m duo_restock models` 可以查看。
+# 如果 Apple 出了新颜色、内置表里没有，也可以直接写 part = "MXXXXLL/A"。
 [[products]]
-part = "MXXX1LL/A"
-name = "iPhone Duo 256GB 黑色"
-# 有货时推送里附带的购买链接（可选）
-url = "https://www.apple.com/shop/buy-iphone"
+capacity = "512gb"
+color = "nightsky"
 
 [[products]]
-part = "MXXX2LL/A"
-name = "iPhone Duo 512GB 白色"
+capacity = "512gb"
+color = "starwhite"
 
 [monitor]
-# 检查间隔（秒），不要低于 20，太快会被 Apple 限流
+# 检查间隔（秒）。每次检查只发一个请求（所有型号一起查）。
+# Apple 大约连续 30 个请求后就会拦截十几分钟，所以别调得太低，60 秒以上最稳
 interval_seconds = 60
 # 每次在间隔上随机加 0~N 秒，避免请求过于规律
 jitter_seconds = 15
-# 被限流 / 出错时指数退避的上限
-max_backoff_seconds = 900
+# 被拦截后依次冷却 5 / 10 / 20 / 30 分钟再试，这里是冷却时间的上限
+max_backoff_seconds = 1800
 # 有货 → 无货时也推送
 notify_sold_out = false
 # 持续有货时每隔多少分钟再提醒一次（0 = 只在刚补货时提醒一次）

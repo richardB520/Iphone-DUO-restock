@@ -36,6 +36,7 @@
   .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; }
   .pill.ok { background: var(--ok-bg); color: var(--ok); font-weight: 600; }
   .pill.no { background: var(--no-bg); color: var(--no); }
+  .pill.wait { background: var(--warn-bg); color: var(--warn); }
   .events li { padding: 6px 0; border-bottom: 1px solid var(--line); list-style: none; }
   .events { margin: 0; padding: 0; }
   .empty { color: var(--muted); }
@@ -53,11 +54,6 @@
   <section class="card">
     <h2>门店取货</h2>
     <div class="scroll"><table id="grid"></table></div>
-  </section>
-
-  <section class="card">
-    <h2>网上订购送货时间</h2>
-    <div class="scroll"><table id="delivery"></table></div>
   </section>
 
   <section class="card">
@@ -104,24 +100,20 @@ function render(s) {
       const cells = s.products.map((prod) => {
         const a = s.pickup.find((p) => p.store_number === st.store_number && p.part === prod.part);
         if (!a) return "<td class='empty'>—</td>";
-        return `<td><span class="pill ${a.available ? "ok" : "no"}">${esc(a.quote || (a.available ? "有货" : "无货"))}</span></td>`;
+        const cls = {available: "ok", not_open: "wait"}[a.status] || "no";
+        const fallback = {available: "有货", not_open: "尚未开放取货"}[a.status] || "无货";
+        return `<td><span class="pill ${cls}">${esc(a.quote || fallback)}</span></td>`;
       }).join("");
       return `<tr><td>${esc(st.store_name)}<div class="meta">${esc(st.city)} ${esc(st.distance)}</div></td>${cells}</tr>`;
     }).join("");
     $("grid").innerHTML = head + rows;
   }
 
-  $("delivery").innerHTML = s.delivery.length
-    ? "<tr><th>型号</th><th>可购买</th><th>送货</th></tr>" + s.delivery.map((d) =>
-        `<tr><td>${esc(d.name)}</td><td>${d.buyable ? "是" : "否"}</td><td>${esc(d.quote || "—")}</td></tr>`).join("")
-    : `<tr><td class="empty">暂无送货信息</td></tr>`;
-
   $("events").innerHTML = s.events.length
     ? s.events.slice(0, 50).map((e) => {
-        const icon = {in_stock: "✅", still_in_stock: "🔔", sold_out: "❌", delivery_changed: "📦"}[e.kind] || "•";
+        const icon = {in_stock: "✅", still_in_stock: "🔔", sold_out: "❌"}[e.kind] || "•";
         const where = e.store ? ` @ ${esc(e.store)}` : "";
-        const detail = e.kind === "delivery_changed" ? `送货 ${esc(e.previous)} → ${esc(e.quote)}` : esc(e.quote);
-        return `<li>${icon} <b>${esc(e.name)}</b>${where} ${detail} <span class="meta">${fmt(e.time)}</span></li>`;
+        return `<li>${icon} <b>${esc(e.name)}</b>${where} ${esc(e.quote)} <span class="meta">${fmt(e.time)}</span></li>`;
       }).join("")
     : `<li class="empty">还没有补货动态</li>`;
 

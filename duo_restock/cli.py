@@ -7,7 +7,7 @@ import logging
 import sys
 import threading
 
-from . import __version__, apple, config, notifiers
+from . import __version__, apple, catalog, config, notifiers
 from .monitor import Monitor
 
 
@@ -23,6 +23,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="只检查一次并打印结果")
     sub.add_parser("test-notify", help="向所有已配置的通知渠道发送一条测试消息")
     sub.add_parser("url", help="打印实际请求的 Apple 接口地址，方便在浏览器里排查")
+    models = sub.add_parser("models", help="列出内置的 iPhone Duo 型号号码")
+    models.add_argument("region", nargs="?", help="地区，默认取配置文件里的 region")
 
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -31,6 +33,9 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
+    if args.command == "models":
+        return print_models(args.region, args.config)
+
     try:
         cfg = config.load(args.config)
     except config.ConfigError as e:
@@ -38,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "url":
-        print(apple.fulfillment_url(cfg.region, cfg.parts, cfg.location, cfg.store, cfg.search_nearby))
+        print(apple.pickup_url(cfg.region, cfg.parts, cfg.location, cfg.store))
         return 0
 
     if args.command == "test-notify":
@@ -48,7 +53,7 @@ def main(argv: list[str] | None = None) -> int:
         msg = notifiers.Message(
             title="🍏 iPhone Duo 补货监控测试",
             body="如果你看到这条消息，说明通知配置正确。",
-            url=f"{apple.site_base(cfg.region)}/shop/buy-iphone",
+            url=apple.buy_page(cfg.region),
         )
         results = notifiers.send_all(cfg.notify, msg)
         for name, outcome in results.items():
@@ -87,12 +92,27 @@ def main(argv: list[str] | None = None) -> int:
 
 def print_table(status: dict) -> None:
     if not status["pickup"]:
-        print("附近没有返回任何门店数据（检查 part 型号号码和 location 是否正确）")
+        print("没有返回任何门店数据（检查型号和 location 是否正确，或 store_filter 是否过滤掉了所有门店）")
     for p in status["pickup"]:
-        mark = "✅" if p["available"] else "  "
-        print(f"{mark} {p['name']:<28} {p['store_name']:<24} {p['city']:<14} {p['quote']}")
-    for d in status["delivery"]:
-        print(f"📦 {d['name']:<28} 送货: {d['quote'] or '—'}")
+        mark = {"available": "✅", "not_open": "⏳"}.get(p["status"], "  ")
+        quote = p["quote"] or ("尚未开放到店取货" if p["status"] == "not_open" else "")
+        print(f"{mark} {p['name']:<28} {p['store_name']:<24} {p['city']:<14} {quote}")
+
+
+def print_models(region: str | None, config_path: str) -> int:
+    if not region:
+        try:
+            region = config.load(config_path).region
+        except config.ConfigError:
+            region = "us"
+    parts = catalog.DUO_PARTS.get(region)
+    if not parts:
+        print(f"没有地区 {region} 的内置型号，可选：{', '.join(catalog.DUO_PARTS)}", file=sys.stderr)
+        return 1
+    print(f"iPhone Duo 型号号码（地区 {region}）：在 config.toml 里写 capacity + color 即可")
+    for (capacity, color), part in parts.items():
+        print(f"  capacity = \"{capacity}\"  color = \"{color}\"   {part}   {catalog.display_name(capacity, color)}")
+    return 0
 
 
 if __name__ == "__main__":
