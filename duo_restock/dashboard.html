@@ -129,7 +129,16 @@ async function saveSettings(change) {
     if (!r.ok) throw new Error(data.error || r.status);
     hoursDirty = false;
     render(data);
-    msg.className = "saved"; msg.textContent = "✓ 已保存，并写入 config.toml";
+    const o = data.outcome || {};
+    msg.className = "saved";
+    if (o.active_now) {
+      msg.textContent = `✓ 已保存并立即生效：现在在监控时段内，下次检查 ${fmt(data.next_check)}`;
+    } else {
+      const when = new Date(o.resumes_at * 1000);
+      const day = when.toDateString() === new Date().toDateString() ? "今天" : "明天";
+      msg.className = "hint";
+      msg.textContent = `已保存。现在不在监控时段（${data.active_hours}）内，${day} ${when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} 开始`;
+    }
   } catch (e) {
     msg.className = "hint"; msg.textContent = "保存失败：" + e.message;
   }
@@ -195,7 +204,7 @@ function render(s) {
   if (s.sleeping_until) { banner.className = "banner err"; banner.textContent = `🌙 休息中，每天 ${s.active_hours} 监控，${fmt(s.sleeping_until)} 自动开始`; }
   else if (s.last_error) { banner.className = "banner err"; banner.textContent = "⚠️ " + s.last_error; }
   else if (available.length) { banner.className = "banner ok"; banner.textContent = `✅ 现在有 ${available.length} 处可取货！`; }
-  else { banner.className = "banner"; }
+  else { banner.className = "banner"; banner.textContent = ""; }
 
   // Store x product grid
   const stores = [...new Map(s.pickup.map((p) => [p.store_number, p])).values()];

@@ -352,22 +352,68 @@ class MonitorTests(unittest.TestCase):
         self.now = datetime(2026, 10, 27, 12, 0).timestamp()
         self.assertEqual(m.seconds_until_active(), 10 * 3600)
 
-    def test_run_sleeps_outside_active_hours_without_polling(self):
+    def test_step_sleeps_outside_active_hours_without_polling(self):
         from datetime import datetime
-
-        class OneShot(threading.Event):
-            def wait(self, timeout=None):
-                self.waited = timeout
-                self.set()
-                return True
 
         m = self.monitor(FakeApple(), active_hours=["05:00", "10:00"])
         self.now = datetime(2026, 10, 27, 3, 0).timestamp()
-        stop = OneShot()
-        m.run(stop)
-        self.assertEqual(stop.waited, 60)
+        self.assertEqual(m.step(), 60)
         self.assertEqual(m.snapshot()["checks"], 0)
         self.assertEqual(m.snapshot()["sleeping_until"], datetime(2026, 10, 27, 5, 0).timestamp())
+
+    def test_extending_hours_resumes_immediately(self):
+        from datetime import datetime
+
+        m = self.monitor(FakeApple(payload_with(False)), active_hours=["05:00", "16:00"])
+        self.now = datetime(2026, 10, 27, 16, 30).timestamp()
+        m.step()
+        self.assertIsNotNone(m.snapshot()["sleeping_until"])
+
+        outcome = m.update_settings(180, (300, 1080))  # 05:00-18:00
+        self.assertEqual(outcome, {"active_now": True, "resumes_at": None})
+        self.assertTrue(m.wake.is_set())
+        self.assertIsNone(m.snapshot()["sleeping_until"])
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 1)
+
+    def test_settings_outside_window_report_when_it_resumes(self):
+        from datetime import datetime
+
+        m = self.monitor(FakeApple())
+        ticks = iter([datetime(2026, 10, 27, 16, 30).timestamp(), datetime(2026, 10, 27, 16, 30, 0, 5000).timestamp()])
+        m.clock = lambda: next(ticks)  # the clock moves between reads
+        outcome = m.update_settings(180, (300, 360))  # 05:00-06:00
+        self.assertFalse(outcome["active_now"])
+        self.assertEqual(outcome["resumes_at"], datetime(2026, 10, 28, 5, 0).timestamp())
+        self.assertEqual(m.snapshot()["sleeping_until"], outcome["resumes_at"])
+
+    def test_shorter_interval_retimes_next_check(self):
+        m = self.monitor(FakeApple(payload_with(False), payload_with(False)))
+        m.step()
+        self.now += 40
+        self.assertGreater(m.step(), 0)  # still waiting on the 180 s interval
+        self.assertEqual(m.snapshot()["checks"], 1)
+        m.update_settings(30, None)
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 2)
+
+    def test_settings_change_never_cuts_a_block_cooldown_short(self):
+        m = self.monitor(FakeApple())
+        m.last_attempt, m.blocks, m.next_due = self.now, 1, self.now + 300
+        m.update_settings(30, None)
+        self.assertEqual(m.next_due, self.now + 300)
+
+    def test_stop_ends_run_promptly(self):
+        m = self.monitor(FakeApple(payload_with(False)))
+        thread = threading.Thread(target=m.run)
+        thread.start()
+        for _ in range(100):
+            if m.snapshot()["checks"]:
+                break
+            threading.Event().wait(0.02)
+        m.stop()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
 
     def test_block_cooldowns_then_error_backoff(self):
         m = self.monitor(FakeApple())
@@ -451,6 +497,7 @@ class DashboardTests(unittest.TestCase):
         code, status = self.post({"interval_seconds": 300, "active_hours": ["06:00", "24:00"]})
         self.assertEqual(code, 200)
         self.assertEqual(status["settings"], {"interval_seconds": 300, "active_hours": ["06:00", "24:00"]})
+        self.assertIn("active_now", status["outcome"])
         self.assertEqual((self.monitor.cfg.interval, self.monitor.cfg.active_hours), (300, (360, 1440)))
         saved = config.load(self.monitor.cfg.source)
         self.assertEqual((saved.interval, saved.active_hours), (300, (360, 1440)))

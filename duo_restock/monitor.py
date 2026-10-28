@@ -42,6 +42,11 @@ class Monitor:
         self.state: dict[str, dict] = self._load_state()
         self.failures = 0
         self.blocks = 0
+        # Set when the dashboard changes settings, so a wait ends right away.
+        self.wake = threading.Event()
+        self.next_due: float | None = None
+        self.last_attempt: float | None = None
+        self.sleeping = False
         self.status: dict = {
             "region": cfg.region,
             "location": cfg.store or cfg.location,
@@ -160,12 +165,12 @@ class Monitor:
 
     # -- loop ------------------------------------------------------------
 
-    def seconds_until_active(self) -> float:
+    def seconds_until_active(self, at: float | None = None) -> float:
         """0 inside the daily window (or with no window), else seconds until it next opens."""
         if not self.cfg.active_hours:
             return 0.0
         start, end = self.cfg.active_hours
-        now = datetime.fromtimestamp(self.clock())
+        now = datetime.fromtimestamp(self.clock() if at is None else at)
         minute = now.hour * 60 + now.minute
         inside = start <= minute < end if start < end else minute >= start or minute < end
         if inside:
@@ -184,7 +189,7 @@ class Monitor:
         return self.cfg.interval + random.uniform(0, self.cfg.jitter)
 
     def run(self, stop: threading.Event | None = None) -> None:
-        stop = stop or threading.Event()
+        self.stop_event = stop = stop or threading.Event()
         log.info(
             "monitoring %d product(s) in region %s near %s every ~%ds",
             len(self.cfg.products),
@@ -193,59 +198,98 @@ class Monitor:
             self.cfg.interval,
         )
         while not stop.is_set():
-            idle = self.seconds_until_active()
-            if idle:
-                wake = self.clock() + idle
-                log.info("outside active hours - sleeping until %s", datetime.fromtimestamp(wake).strftime("%H:%M"))
-                with self.lock:
-                    self.status["sleeping_until"] = wake
-                    self.status["next_check"] = wake
-                # A block from yesterday says nothing about today.
-                self.failures = self.blocks = 0
-                # Re-check the wall clock every minute: the wait timer can stall
-                # while the Mac sleeps, which would start the window late.
-                stop.wait(min(idle, 60))
-                continue
-            with self.lock:
-                self.status["sleeping_until"] = None
-            try:
-                self.poll_once()
-                self.failures = 0
-                self.blocks = 0
-                available = sum(1 for p in self.status["pickup"] if p["available"])
-                log.info("check #%d ok - %d store/model combination(s) available", self.status["checks"], available)
-            except apple.AppleError as e:
-                if e.throttled:
-                    self.blocks += 1
-                    hint = (
-                        f"（Apple 拦截了请求，{self.next_delay() / 60:.0f} 分钟后再试；"
-                        "同一网络下的其他监控程序或频繁刷新官网也会占用额度）"
-                    )
-                else:
-                    self.failures += 1
-                    hint = ""
-                log.warning("check failed: %s%s", e, hint)
-                with self.lock:
-                    self.status["last_error"] = str(e) + hint
-            delay = self.next_delay()
-            with self.lock:
-                self.status["next_check"] = self.clock() + delay
-            stop.wait(delay)
+            wait = self.step()
+            # Waits are capped at a minute: the timer can stall while a Mac sleeps,
+            # and a settings change from the dashboard sets `wake` to end them early.
+            if self.wake.wait(wait):
+                self.wake.clear()
 
-    def update_settings(self, interval: float, active_hours: tuple[int, int] | None) -> None:
-        """Apply new settings from the dashboard and save them to config.toml.
+    def stop(self) -> None:
+        self.stop_event.set()
+        self.wake.set()
 
-        The new interval takes effect from the next wait; an active-hours change is
-        picked up within a minute.
+    def step(self) -> float:
+        """Do whatever is due now; return how long to wait before calling again."""
+        now = self.clock()
+        idle = self.seconds_until_active(now)
+        if idle:
+            # Rounded: float error otherwise shows 05:00 as 04:59:59.
+            resumes = round(now + idle)
+            if not self.sleeping:
+                log.info("outside active hours - sleeping until %s", datetime.fromtimestamp(resumes).strftime("%H:%M"))
+                self.sleeping = True
+            with self.lock:
+                self.status["sleeping_until"] = resumes
+                self.status["next_check"] = resumes
+            # A block from yesterday says nothing about today.
+            self.failures = self.blocks = 0
+            return min(idle, 60)
+
+        if self.sleeping:
+            log.info("active hours started")
+            self.sleeping = False
+        with self.lock:
+            self.status["sleeping_until"] = None
+
+        if self.next_due and now < self.next_due:
+            return min(self.next_due - now, 60)
+
+        self.last_attempt = now
+        self._check()
+        delay = self.next_delay()
+        self.next_due = self.clock() + delay
+        with self.lock:
+            self.status["next_check"] = self.next_due
+        return min(delay, 60)
+
+    def _check(self) -> None:
+        try:
+            self.poll_once()
+            self.failures = 0
+            self.blocks = 0
+            available = sum(1 for p in self.status["pickup"] if p["available"])
+            log.info("check #%d ok - %d store/model combination(s) available", self.status["checks"], available)
+        except apple.AppleError as e:
+            if e.throttled:
+                self.blocks += 1
+                hint = (
+                    f"（Apple 拦截了请求，{self.next_delay() / 60:.0f} 分钟后再试；"
+                    "同一网络下的其他监控程序或频繁刷新官网也会占用额度）"
+                )
+            else:
+                self.failures += 1
+                hint = ""
+            log.warning("check failed: %s%s", e, hint)
+            with self.lock:
+                self.status["last_error"] = str(e) + hint
+
+    def update_settings(self, interval: float, active_hours: tuple[int, int] | None) -> dict:
+        """Apply new settings from the dashboard right away and save them to config.toml.
+
+        Returns whether monitoring is active now, and if not, when it resumes.
         """
         if self.cfg.source:
             save_monitor_settings(self.cfg.source, interval, active_hours)
         with self.lock:
             self.cfg.interval = interval
             self.cfg.active_hours = active_hours
+            # Re-time the next check from the last one, but never cut a block cooldown short.
+            if not self.blocks and not self.failures and self.last_attempt is not None:
+                self.next_due = self.last_attempt + interval
             self.status["active_hours"] = _format_hours(active_hours)
             self.status["settings"] = _settings(self.cfg)
+
+        now = self.clock()
+        idle = self.seconds_until_active(now)
+        with self.lock:
+            if idle:
+                self.status["sleeping_until"] = self.status["next_check"] = round(now + idle)
+            else:
+                self.status["sleeping_until"] = None
+                self.status["next_check"] = max(self.next_due or now, now)
+        self.wake.set()
         log.info("settings changed: every %ds, active hours %s", interval, _format_hours(active_hours) or "all day")
+        return {"active_now": not idle, "resumes_at": round(now + idle) if idle else None}
 
     def snapshot(self) -> dict:
         with self.lock:

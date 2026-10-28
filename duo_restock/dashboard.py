@@ -51,11 +51,11 @@ def serve(monitor, host: str, port: int) -> ThreadingHTTPServer:
                 self._json(400, {"error": str(e)})
                 return
             try:
-                monitor.update_settings(interval, active_hours)
+                outcome = monitor.update_settings(interval, active_hours)
             except OSError as e:
                 self._json(500, {"error": f"保存 config.toml 失败：{e}"})
                 return
-            self._json(200, monitor.snapshot())
+            self._json(200, {**monitor.snapshot(), "outcome": outcome})
 
         def _json(self, code: int, data: dict) -> None:
             self._send(code, "application/json; charset=utf-8", json.dumps(data, ensure_ascii=False).encode())
