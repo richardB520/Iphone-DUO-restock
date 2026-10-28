@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,8 @@ class Config:
     dashboard_host: str = "127.0.0.1"
     dashboard_port: int = 8765
     notify: dict[str, dict] = field(default_factory=dict)
+    # The file this config was loaded from, so dashboard changes can be saved back.
+    source: Path | None = None
 
     @property
     def parts(self) -> list[str]:
@@ -72,7 +75,9 @@ def load(path: str | Path) -> Config:
         ) from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from None
-    return from_dict(data, base_dir=path.parent)
+    cfg = from_dict(data, base_dir=path.parent)
+    cfg.source = path
+    return cfg
 
 
 def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
@@ -111,17 +116,7 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
     if not products:
         raise ConfigError("add at least one [[products]] entry (capacity + color, or part)")
 
-    interval = float(monitor.get("interval_seconds", 180))
-    if interval < 20:
-        raise ConfigError("[monitor] interval_seconds below 20 will get you blocked by Apple")
-    if interval < 150:
-        # Measured: Apple lets roughly 30 pickup queries per IP per hour through.
-        log.warning(
-            "interval_seconds = %d means ~%d requests/hour; Apple blocks at about 30/hour, "
-            "so expect a 15-30 minute block roughly every hour. 180 is recommended.",
-            interval,
-            3600 // interval,
-        )
+    interval = check_interval(monitor.get("interval_seconds", 180))
 
     active_hours = _parse_active_hours(monitor.get("active_hours"))
 
@@ -171,3 +166,73 @@ def _parse_active_hours(raw) -> tuple[int, int] | None:
     if minutes[0] == minutes[1]:
         raise ConfigError("[monitor] active_hours start and end must differ")
     return minutes[0], minutes[1]
+
+
+def check_interval(raw) -> float:
+    try:
+        interval = float(raw)
+    except (TypeError, ValueError):
+        raise ConfigError(f"[monitor] interval_seconds must be a number, got {raw!r}") from None
+    if interval < 20:
+        raise ConfigError("[monitor] interval_seconds below 20 will get you blocked by Apple")
+    if interval < 150:
+        # Measured: Apple lets roughly 30 pickup queries per IP per hour through.
+        log.warning(
+            "interval_seconds = %d means ~%d requests/hour; Apple blocks at about 30/hour, "
+            "so expect a 15-30 minute block roughly every hour. 180 is recommended.",
+            interval,
+            3600 // interval,
+        )
+    return interval
+
+
+def parse_active_hours(raw) -> tuple[int, int] | None:
+    return _parse_active_hours(raw)
+
+
+def format_active_hours(hours: tuple[int, int] | None) -> list[str] | None:
+    if not hours:
+        return None
+    return [f"{m // 60:02d}:{m % 60:02d}" for m in hours]
+
+
+def save_monitor_settings(path: Path, interval: float, active_hours: tuple[int, int] | None) -> None:
+    """Rewrite interval_seconds and active_hours in [monitor], keeping every other line."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    values = {
+        "interval_seconds": f"interval_seconds = {int(interval)}\n",
+        "active_hours": (
+            "active_hours = [{}]\n".format(", ".join(f'"{t}"' for t in format_active_hours(active_hours)))
+            if active_hours
+            else None
+        ),
+    }
+
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == "[monitor]")
+    except StopIteration:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines += ["\n", "[monitor]\n"]
+        start = len(lines) - 1
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")),
+        len(lines),
+    )
+
+    for key, new in values.items():
+        pattern = re.compile(rf"^\s*{key}\s*=")
+        index = next((i for i in range(start + 1, end) if pattern.match(lines[i])), None)
+        if index is not None:
+            if new is None:
+                del lines[index]
+                end -= 1
+            else:
+                lines[index] = new
+        elif new is not None:
+            lines.insert(start + 1, new)
+            end += 1
+
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("".join(lines), encoding="utf-8")
+    tmp.replace(path)

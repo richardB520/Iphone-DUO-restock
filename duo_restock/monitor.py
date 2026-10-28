@@ -13,7 +13,7 @@ from dataclasses import asdict
 from typing import Callable
 
 from . import apple, notifiers
-from .config import Config
+from .config import Config, format_active_hours, save_monitor_settings
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,7 @@ class Monitor:
             "last_error": None,
             "sleeping_until": None,
             "active_hours": _format_hours(cfg.active_hours),
+            "settings": _settings(cfg),
             "checks": 0,
             "pickup": [],
             "events": [],
@@ -231,6 +232,21 @@ class Monitor:
                 self.status["next_check"] = self.clock() + delay
             stop.wait(delay)
 
+    def update_settings(self, interval: float, active_hours: tuple[int, int] | None) -> None:
+        """Apply new settings from the dashboard and save them to config.toml.
+
+        The new interval takes effect from the next wait; an active-hours change is
+        picked up within a minute.
+        """
+        if self.cfg.source:
+            save_monitor_settings(self.cfg.source, interval, active_hours)
+        with self.lock:
+            self.cfg.interval = interval
+            self.cfg.active_hours = active_hours
+            self.status["active_hours"] = _format_hours(active_hours)
+            self.status["settings"] = _settings(self.cfg)
+        log.info("settings changed: every %ds, active hours %s", interval, _format_hours(active_hours) or "all day")
+
     def snapshot(self) -> dict:
         with self.lock:
             return json.loads(json.dumps(self.status))
@@ -240,3 +256,7 @@ def _format_hours(hours: tuple[int, int] | None) -> str | None:
     if not hours:
         return None
     return "–".join(f"{m // 60:02d}:{m % 60:02d}" for m in hours)
+
+
+def _settings(cfg: Config) -> dict:
+    return {"interval_seconds": int(cfg.interval), "active_hours": format_active_hours(cfg.active_hours)}

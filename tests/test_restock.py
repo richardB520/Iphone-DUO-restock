@@ -383,6 +383,98 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(m.next_delay(), 1800)
 
 
+class SettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self.tmp.name) / "config.toml"
+        self.path.write_text((Path(__file__).parent.parent / "config.example.toml").read_text())
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_save_keeps_comments_and_other_settings(self):
+        before = self.path.read_text()
+        config.save_monitor_settings(self.path, 300, (360, 1440))
+        cfg = config.load(self.path)
+        self.assertEqual((cfg.interval, cfg.active_hours, cfg.source), (300, (360, 1440), self.path))
+        self.assertIn('active_hours = ["06:00", "24:00"]', self.path.read_text())
+        changed = [
+            (a, b) for a, b in zip(before.splitlines(), self.path.read_text().splitlines()) if a != b
+        ]
+        self.assertEqual(len(changed), 2)
+        self.assertEqual(len(before.splitlines()), len(self.path.read_text().splitlines()))
+
+    def test_save_all_day_removes_window_and_can_add_it_back(self):
+        config.save_monitor_settings(self.path, 180, None)
+        self.assertIsNone(config.load(self.path).active_hours)
+        config.save_monitor_settings(self.path, 180, (300, 600))
+        self.assertEqual(config.load(self.path).active_hours, (300, 600))
+
+    def test_save_creates_monitor_section_when_missing(self):
+        self.path.write_text('[apple]\nlocation = "1"\n\n[[products]]\npart = "X"\n')
+        config.save_monitor_settings(self.path, 240, (300, 600))
+        cfg = config.load(self.path)
+        self.assertEqual((cfg.interval, cfg.active_hours, cfg.parts), (240, (300, 600), ["X"]))
+
+
+class DashboardTests(unittest.TestCase):
+    def setUp(self):
+        from duo_restock import dashboard
+
+        self.tmp = tempfile.TemporaryDirectory()
+        path = Path(self.tmp.name) / "config.toml"
+        path.write_text((Path(__file__).parent.parent / "config.example.toml").read_text())
+        self.monitor = Monitor(config.load(path), checker=FakeApple(), sender=lambda c, m: None)
+        self.server = dashboard.serve(self.monitor, "127.0.0.1", 0)
+        self.base = f"http://127.0.0.1:{self.server.server_port}"
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.tmp.cleanup()
+
+    def post(self, body, content_type="application/json"):
+        import urllib.error
+        import urllib.request
+
+        data = body if isinstance(body, bytes) else json.dumps(body).encode()
+        req = urllib.request.Request(
+            self.base + "/api/settings", data=data, headers={"Content-Type": content_type}, method="POST"
+        )
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_settings_change_applies_live_and_is_saved(self):
+        code, status = self.post({"interval_seconds": 300, "active_hours": ["06:00", "24:00"]})
+        self.assertEqual(code, 200)
+        self.assertEqual(status["settings"], {"interval_seconds": 300, "active_hours": ["06:00", "24:00"]})
+        self.assertEqual((self.monitor.cfg.interval, self.monitor.cfg.active_hours), (300, (360, 1440)))
+        saved = config.load(self.monitor.cfg.source)
+        self.assertEqual((saved.interval, saved.active_hours), (300, (360, 1440)))
+
+    def test_all_day(self):
+        code, status = self.post({"interval_seconds": 180, "active_hours": None})
+        self.assertEqual(code, 200)
+        self.assertIsNone(self.monitor.cfg.active_hours)
+        self.assertIsNone(status["active_hours"])
+
+    def test_rejects_bad_values_without_changing_anything(self):
+        before = self.monitor.cfg.source.read_text()
+        self.assertEqual(self.post({"interval_seconds": 5, "active_hours": None})[0], 400)
+        self.assertEqual(self.post({"interval_seconds": 180, "active_hours": ["9am", "10:00"]})[0], 400)
+        self.assertEqual(self.post({"active_hours": None})[0], 400)
+        self.assertEqual(self.post(b"not json")[0], 400)
+        self.assertEqual(self.monitor.cfg.source.read_text(), before)
+        self.assertEqual(self.monitor.cfg.interval, 180)
+
+    def test_rejects_form_posts_from_other_sites(self):
+        code, _ = self.post(b"interval_seconds=20", content_type="application/x-www-form-urlencoded")
+        self.assertEqual(code, 415)
+
+
 class NotifierTests(unittest.TestCase):
     def test_one_failing_channel_does_not_block_others(self):
         calls = []

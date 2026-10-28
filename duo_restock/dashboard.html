@@ -41,6 +41,17 @@
   .events { margin: 0; padding: 0; }
   .empty { color: var(--muted); }
   button { background: var(--accent); color: #fff; border: 0; border-radius: 999px; padding: 6px 14px; font: inherit; font-size: 13px; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .setting { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 0; }
+  .setting + .setting { border-top: 1px solid var(--line); }
+  .label { color: var(--muted); font-size: 13px; min-width: 64px; }
+  .seg { display: flex; flex-wrap: wrap; gap: 6px; }
+  .seg button { background: var(--no-bg); color: var(--text); }
+  .seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
+  input[type=time] { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .hint { font-size: 13px; color: var(--warn); }
+  .saved { font-size: 13px; color: var(--ok); }
 </style>
 </head>
 <body>
@@ -50,6 +61,27 @@
     <span class="meta" id="meta">连接中…</span>
   </header>
   <div class="banner" id="banner"></div>
+
+  <section class="card">
+    <h2>查询设置</h2>
+    <div class="setting">
+      <span class="label">查询间隔</span>
+      <div class="seg" id="interval-seg">
+        <button data-sec="120">2 分钟</button>
+        <button data-sec="180">3 分钟（推荐）</button>
+        <button data-sec="300">5 分钟</button>
+        <button data-sec="600">10 分钟</button>
+      </div>
+      <span class="hint" id="interval-hint"></span>
+    </div>
+    <div class="setting">
+      <span class="label">监控时段</span>
+      <label><input type="checkbox" id="allday"> 全天</label>
+      <span id="hours-range"><input type="time" id="start"> 到 <input type="time" id="end"></span>
+      <button id="save-hours">保存时段</button>
+    </div>
+    <div id="settings-msg" class="meta"></div>
+  </section>
 
   <section class="card">
     <h2>门店取货</h2>
@@ -66,6 +98,8 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmt = (t) => t ? new Date(t * 1000).toLocaleTimeString() : "—";
 let seenEvent = null;
+let settings = null;     // last settings the server confirmed
+let hoursDirty = false;  // user is editing the time inputs; don't overwrite them
 
 if ("Notification" in window && Notification.permission === "default") {
   $("notify-btn").hidden = false;
@@ -80,7 +114,58 @@ function beep() {
   } catch (e) {}
 }
 
+async function saveSettings(change) {
+  const body = { ...settings, ...change };
+  const msg = $("settings-msg");
+  msg.className = "meta"; msg.textContent = "保存中…";
+  try {
+    const r = await fetch("/api/settings", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || r.status);
+    hoursDirty = false;
+    render(data);
+    msg.className = "saved"; msg.textContent = "✓ 已保存，并写入 config.toml";
+  } catch (e) {
+    msg.className = "hint"; msg.textContent = "保存失败：" + e.message;
+  }
+}
+
+document.querySelectorAll("#interval-seg button").forEach((b) => {
+  b.onclick = () => saveSettings({ interval_seconds: Number(b.dataset.sec) });
+});
+$("allday").onchange = () => { hoursDirty = true; $("hours-range").style.opacity = $("allday").checked ? 0.4 : 1; };
+$("start").oninput = $("end").oninput = () => { hoursDirty = true; };
+$("save-hours").onclick = () => {
+  if ($("allday").checked) return saveSettings({ active_hours: null });
+  const start = $("start").value, end = $("end").value;
+  if (!start || !end) { $("settings-msg").className = "hint"; $("settings-msg").textContent = "请填写开始和结束时间"; return; }
+  // A time input can't say 24:00, so an end of 00:00 means midnight.
+  saveSettings({ active_hours: [start, end === "00:00" ? "24:00" : end] });
+};
+
+function renderSettings(cfg) {
+  settings = cfg;
+  document.querySelectorAll("#interval-seg button").forEach((b) => {
+    b.classList.toggle("on", Number(b.dataset.sec) === cfg.interval_seconds);
+  });
+  const perHour = Math.floor(3600 / cfg.interval_seconds);
+  const preset = [120, 180, 300, 600].includes(cfg.interval_seconds);
+  $("interval-hint").textContent =
+    (preset ? "" : `当前：${cfg.interval_seconds} 秒。`) +
+    (cfg.interval_seconds < 150 ? `每小时约 ${perHour} 次，Apple 大约每小时只放行 30 次，会周期性被拦截` : "");
+  if (!hoursDirty) {
+    const hours = cfg.active_hours;
+    $("allday").checked = !hours;
+    $("hours-range").style.opacity = hours ? 1 : 0.4;
+    $("start").value = hours ? hours[0] : "05:00";
+    $("end").value = hours ? (hours[1] === "24:00" ? "00:00" : hours[1]) : "00:00";
+  }
+}
+
 function render(s) {
+  if (s.settings) renderSettings(s.settings);
   const next = s.next_check ? `，下次 ${fmt(s.next_check)}` : "";
   $("meta").textContent = `${s.region.toUpperCase()} · ${s.location} · 已检查 ${s.checks} 次 · 上次 ${fmt(s.last_check)}${next}`;
 
