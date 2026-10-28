@@ -378,7 +378,7 @@ class MonitorTests(unittest.TestCase):
         m.blocks = 9
         self.assertEqual(m.next_delay(), 1800)
         m.blocks, m.failures = 0, 1
-        self.assertEqual(m.next_delay(), 120)
+        self.assertEqual(m.next_delay(), 360)  # interval 180 doubled
         m.failures = 10
         self.assertEqual(m.next_delay(), 1800)
 

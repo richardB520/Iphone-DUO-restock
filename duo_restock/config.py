@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import catalog
 from .apple import REGIONS
+
+
+log = logging.getLogger(__name__)
 
 
 class ConfigError(Exception):
@@ -28,7 +32,7 @@ class Config:
     store: str
     store_filter: list[str]
     products: list[Product]
-    interval: float = 60.0
+    interval: float = 180.0
     jitter: float = 15.0
     max_backoff: float = 1800.0
     notify_sold_out: bool = False
@@ -107,9 +111,17 @@ def from_dict(data: dict, base_dir: Path = Path(".")) -> Config:
     if not products:
         raise ConfigError("add at least one [[products]] entry (capacity + color, or part)")
 
-    interval = float(monitor.get("interval_seconds", 60))
+    interval = float(monitor.get("interval_seconds", 180))
     if interval < 20:
         raise ConfigError("[monitor] interval_seconds below 20 will get you blocked by Apple")
+    if interval < 150:
+        # Measured: Apple lets roughly 30 pickup queries per IP per hour through.
+        log.warning(
+            "interval_seconds = %d means ~%d requests/hour; Apple blocks at about 30/hour, "
+            "so expect a 15-30 minute block roughly every hour. 180 is recommended.",
+            interval,
+            3600 // interval,
+        )
 
     active_hours = _parse_active_hours(monitor.get("active_hours"))
 
