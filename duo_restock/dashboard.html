@@ -48,7 +48,7 @@
   .seg { display: flex; flex-wrap: wrap; gap: 6px; }
   .seg button { background: var(--no-bg); color: var(--text); }
   .seg button.on { background: var(--accent); color: #fff; font-weight: 600; }
-  input[type=time] { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
+  select { font: inherit; font-size: 14px; padding: 4px 8px; border-radius: 8px;
     border: 1px solid var(--line); background: var(--bg); color: var(--text); }
   .hint { font-size: 13px; color: var(--warn); }
   .saved { font-size: 13px; color: var(--ok); }
@@ -80,7 +80,7 @@
     <div class="setting">
       <span class="label">监控时段</span>
       <label><input type="checkbox" id="allday"> 全天</label>
-      <span id="hours-range"><input type="time" id="start"> 到 <input type="time" id="end"></span>
+      <span id="hours-range"><select id="start"></select> 到 <select id="end"></select></span>
       <button id="save-hours">保存时段</button>
     </div>
     <div id="settings-msg" class="meta"></div>
@@ -139,14 +139,30 @@ document.querySelectorAll("#interval-seg button").forEach((b) => {
   b.onclick = () => saveSettings({ interval_seconds: Number(b.dataset.sec) });
 });
 $("allday").onchange = () => { hoursDirty = true; $("hours-range").style.opacity = $("allday").checked ? 0.4 : 1; };
-$("start").oninput = $("end").oninput = () => { hoursDirty = true; };
+$("start").onchange = $("end").onchange = () => { hoursDirty = true; };
 $("save-hours").onclick = () => {
   if ($("allday").checked) return saveSettings({ active_hours: null });
   const start = $("start").value, end = $("end").value;
-  if (!start || !end) { $("settings-msg").className = "hint"; $("settings-msg").textContent = "请填写开始和结束时间"; return; }
-  // A time input can't say 24:00, so an end of 00:00 means midnight.
-  saveSettings({ active_hours: [start, end === "00:00" ? "24:00" : end] });
+  if (start === end) { $("settings-msg").className = "hint"; $("settings-msg").textContent = "开始和结束时间不能一样"; return; }
+  saveSettings({ active_hours: [start, end] });
 };
+
+// Plain 24-hour dropdowns: a time input shows AM/PM on many Macs, which made
+// picking an afternoon end time awkward.
+function hourLabel(value) {
+  const [h, m] = value.split(":").map(Number);
+  if (h === 24 || (h === 0 && m === 0)) return `${h === 24 ? "午夜 12 点" : "凌晨 0 点"} (${value})`;
+  const part = h < 6 ? "凌晨" : h < 12 ? "上午" : h === 12 ? "中午" : h < 18 ? "下午" : "晚上";
+  const h12 = h > 12 ? h - 12 : h;
+  return `${part} ${h12}${m ? ":" + String(m).padStart(2, "0") : " 点"} (${value})`;
+}
+function fillHours(select, from, to, current) {
+  const values = [];
+  for (let h = from; h <= to; h++) values.push(`${String(h).padStart(2, "0")}:00`);
+  if (current && !values.includes(current)) values.push(current), values.sort();
+  select.innerHTML = values.map((v) => `<option value="${v}">${hourLabel(v)}</option>`).join("");
+  select.value = current;
+}
 
 function renderSettings(cfg) {
   settings = cfg;
@@ -164,8 +180,8 @@ function renderSettings(cfg) {
     const hours = cfg.active_hours;
     $("allday").checked = !hours;
     $("hours-range").style.opacity = hours ? 1 : 0.4;
-    $("start").value = hours ? hours[0] : "05:00";
-    $("end").value = hours ? (hours[1] === "24:00" ? "00:00" : hours[1]) : "00:00";
+    fillHours($("start"), 0, 23, hours ? hours[0] : "05:00");
+    fillHours($("end"), 1, 24, hours ? hours[1] : "24:00");
   }
 }
 
