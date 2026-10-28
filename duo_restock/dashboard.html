@@ -67,6 +67,9 @@
     <div class="setting">
       <span class="label">查询间隔</span>
       <div class="seg" id="interval-seg">
+        <button data-sec="30">30 秒</button>
+        <button data-sec="60">1 分钟</button>
+        <button data-sec="90">1.5 分钟</button>
         <button data-sec="120">2 分钟</button>
         <button data-sec="180">3 分钟（推荐）</button>
         <button data-sec="300">5 分钟</button>
@@ -151,10 +154,12 @@ function renderSettings(cfg) {
     b.classList.toggle("on", Number(b.dataset.sec) === cfg.interval_seconds);
   });
   const perHour = Math.floor(3600 / cfg.interval_seconds);
-  const preset = [120, 180, 300, 600].includes(cfg.interval_seconds);
+  const preset = [30, 60, 90, 120, 180, 300, 600].includes(cfg.interval_seconds);
   $("interval-hint").textContent =
     (preset ? "" : `当前：${cfg.interval_seconds} 秒。`) +
-    (cfg.interval_seconds < 150 ? `每小时约 ${perHour} 次，Apple 大约每小时只放行 30 次，会周期性被拦截` : "");
+    (cfg.interval_seconds < 150
+      ? `每小时约 ${perHour} 次，Apple 大约每小时只放行 30 次，约 ${Math.round(30 * cfg.interval_seconds / 60)} 分钟后会被拦 15~30 分钟`
+      : "");
   if (!hoursDirty) {
     const hours = cfg.active_hours;
     $("allday").checked = !hours;
