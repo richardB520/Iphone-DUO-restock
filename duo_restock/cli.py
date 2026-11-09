@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import sys
 import threading
+from pathlib import Path
 
-from . import __version__, apple, catalog, config, notifiers
+from . import __version__, apple, autostart, catalog, config, notifiers
 from .monitor import Monitor
 
 
@@ -20,6 +22,9 @@ def main(argv: list[str] | None = None) -> int:
 
     run = sub.add_parser("run", help="持续监控，有货时推送")
     run.add_argument("--no-dashboard", action="store_true", help="不启动本地网页看板")
+    run.add_argument("--log-file", help="把日志写到这个文件（超过 1MB 自动轮换，保留 3 份）")
+    sub.add_parser("install-autostart", help="macOS：登录后自动启动监控，意外退出自动重启")
+    sub.add_parser("uninstall-autostart", help="macOS：取消自动启动")
     sub.add_parser("check", help="只检查一次并打印结果")
     sub.add_parser("test-notify", help="向所有已配置的通知渠道发送一条测试消息")
     sub.add_parser("url", help="打印实际请求的 Apple 接口地址，方便在浏览器里排查")
@@ -27,10 +32,18 @@ def main(argv: list[str] | None = None) -> int:
     models.add_argument("region", nargs="?", help="地区，默认取配置文件里的 region")
 
     args = parser.parse_args(argv)
+    handlers = None
+    if getattr(args, "log_file", None):
+        handlers = [
+            logging.handlers.RotatingFileHandler(
+                args.log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8"
+            )
+        ]
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%m-%d %H:%M:%S",
+        handlers=handlers,
     )
 
     if args.command == "models":
@@ -41,6 +54,11 @@ def main(argv: list[str] | None = None) -> int:
     except config.ConfigError as e:
         print(f"配置错误: {e}", file=sys.stderr)
         return 2
+
+    if args.command == "install-autostart":
+        return autostart.install(Path(args.config))
+    if args.command == "uninstall-autostart":
+        return autostart.uninstall()
 
     if args.command == "url":
         print(apple.pickup_url(cfg.region, cfg.parts, cfg.location, cfg.store))
@@ -73,6 +91,13 @@ def main(argv: list[str] | None = None) -> int:
         print_table(monitor.snapshot())
         return 0
 
+    # Two monitors on one network double the requests and get blocked twice
+    # as fast, so a second copy bows out.
+    lock = acquire_lock(cfg.state_file.with_name("monitor.lock"))
+    if lock is None:
+        print(f"监控已经在运行了，不再重复启动。看板：http://127.0.0.1:{cfg.dashboard_port}")
+        return 0
+
     if not args.no_dashboard:
         from . import dashboard
 
@@ -88,6 +113,21 @@ def main(argv: list[str] | None = None) -> int:
         stop.set()
         print("\n已停止")
     return 0
+
+
+def acquire_lock(path: Path):
+    """Hold an exclusive lock for the life of the process; None if another copy has it."""
+    try:
+        import fcntl
+    except ImportError:  # Windows: no cheap advisory lock, so no guard there
+        return path
+    handle = path.open("w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
 
 
 def print_table(status: dict) -> None:

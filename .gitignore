@@ -6,3 +6,8 @@ config.toml
 state.json
 state.tmp
 monitor.log
+monitor.log.*
+monitor.out.log
+monitor.lock
+history.jsonl
+*.tmp

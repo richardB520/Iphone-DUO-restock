@@ -20,10 +20,8 @@ fi
 
 if [ ! -f config.toml ]; then
   cp config.example.toml config.toml
-  echo "已生成 config.toml，请先填好型号号码（part）和位置（location），保存后再双击运行。"
-  open -e config.toml
-  read -r -p "按回车退出" _
-  exit 0
+  echo "第一次运行：已生成 config.toml。"
+  echo "浏览器打开后，在「监控内容和推送」里填邮编、勾选型号、填 Bark 地址，点保存即可。"
 fi
 
 PORT=$(grep -E '^\s*port\s*=' config.toml | head -1 | tr -dc '0-9')

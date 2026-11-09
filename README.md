@@ -5,9 +5,11 @@
 - ✅ **门店取货监控**：可以同时监控多个型号，覆盖附近所有门店，或只看你指定的几家
 - 🏷️ **内置型号号码**：10 个地区、8 种容量和颜色组合都已内置，配置里写 `512gb` + `nightsky` 就行，不用自己去官网找号码
 - 🔔 **9 种通知渠道**：Bark（iPhone 推送）、Server 酱 / PushPlus（微信）、Telegram、ntfy、Discord、自定义 Webhook、邮件、电脑弹窗和提示音
-- 🖥️ **网页看板**：门店 × 型号的有货表格、补货动态记录，浏览器里也能弹提醒、响提示音；还能直接在页面上点按钮调整查询间隔和每天的监控时段，马上生效并保存到 `config.toml`
+- 🖥️ **网页看板**：门店 × 型号的有货表格；能直接在页面上改邮编、型号、Bark 地址、查询间隔和监控时段，暂停/继续、立即查一次、测试推送，改完马上生效并保存到 `config.toml`
+- 📈 **补货记录**：每次放货和售罄都存进 `history.jsonl`，重启不丢，能看出几点放货、一批货能留多久
 - 🌏 **多地区**：美国、中国大陆、香港、台湾、日本、新加坡、加拿大、英国、澳大利亚
-- 🛡️ **防拦截**：像浏览器一样先拿会话 cookie，每轮只发一个请求；被 Apple 拦截后冷却 5 → 10 → 20 → 30 分钟再试；只在状态变化时推送，不会刷屏
+- 🛡️ **防拦截**：像浏览器一样先拿会话 cookie，每轮只发一个请求；自己限制每小时最多查 25 次（Apple 约 30 次就拦）；被拦截后冷却 5 → 10 → 20 → 30 分钟再试；同一台电脑不会重复启动两份监控
+- 🚨 **中断提醒**：连续 45 分钟查不到库存会推送提醒，恢复后再推一条
 - 📦 **零依赖**：只需要 Python 3.11+，不用装任何第三方库
 
 ![看板截图](docs/dashboard.png)
@@ -57,9 +59,11 @@ color = "nightsky"     # nightsky（Night Sky）/ starwhite（Star White）
 | `apple.store_filter` | 只关心哪些门店，例如 `["R095", "R227"]` |
 | `monitor.interval_seconds` | 检查间隔，默认 180 秒。每轮所有型号合成一个请求。Apple 每个 IP 每小时大约只放行 30 次，低于 150 秒会周期性被拦 |
 | `monitor.active_hours` | 每天只在这个时间段监控，例如 `["05:00", "10:00"]`（电脑本地时间），其余时间不发请求；不写就是全天 |
+| `monitor.max_requests_per_hour` | 任意一小时内最多查询多少次，默认 25。间隔设得很短时，额度用完后程序会自动等待 |
+| `monitor.alert_after_minutes` | 连续多少分钟查不到库存就推送提醒，默认 45，0 表示不提醒 |
 | `monitor.remind_minutes` | 一直有货时每隔多少分钟再提醒一次，0 表示只在刚补货时提醒一次 |
 | `monitor.notify_sold_out` | 卖完时是否也推送 |
-| `dashboard.host` | 改成 `0.0.0.0` 后，同一 Wi-Fi 下的手机也能打开看板 |
+| `dashboard.host` | 改成 `0.0.0.0` 后，同一 Wi-Fi 下的手机也能打开看板。注意：这样同一网络里的任何人都能打开看板并修改设置，只在自己家的网络里这么用 |
 
 ### 推荐的通知设置
 
@@ -76,6 +80,7 @@ color = "nightsky"     # nightsky（Night Sky）/ starwhite（Star White）
 | `python3 -m duo_restock run` | 持续监控，同时启动看板（加 `--no-dashboard` 就不启动看板） |
 | `python3 -m duo_restock check` | 只检查一次，把结果打印出来，不推送 |
 | `python3 -m duo_restock test-notify` | 给所有已启用的渠道发一条测试消息 |
+| `python3 -m duo_restock install-autostart` | macOS：登录后自动启动监控（`uninstall-autostart` 取消） |
 | `python3 -m duo_restock models` | 列出内置的 iPhone Duo 型号号码（可以加地区，例如 `models cn`） |
 | `python3 -m duo_restock url` | 打印实际请求的 Apple 接口地址，可以贴到浏览器里排查问题 |
 
@@ -85,25 +90,24 @@ color = "nightsky"     # nightsky（Night Sky）/ starwhite（Star White）
 
 监控程序需要一直开着，并且要在你自己的电脑或家里的网络上运行：Apple 经常屏蔽云服务器和数据中心的 IP。
 
-```bash
-# macOS / Linux：关掉终端也继续跑
-nohup python3 -m duo_restock run > monitor.log 2>&1 &
-
-# 或者放进 tmux / screen 里
-tmux new -s duo 'python3 -m duo_restock run'
-```
-
-Mac 记得在「系统设置 → 电池」里关掉自动睡眠，不然电脑睡着了就收不到提醒。
-
-如果设置了 `active_hours`、晚上想让 Mac 睡觉，可以让它每天定时自己醒来（需要输入开机密码）：
+**macOS 推荐：设成登录后自动启动**
 
 ```bash
-sudo pmset repeat wakeorpoweron MTWRFSU 04:55:00   # 每天 4:55 唤醒
-pmset -g sched                                    # 查看已设置的计划
-sudo pmset repeat cancel                          # 取消
+python3 -m duo_restock install-autostart     # 登录后自动启动，意外退出自动重启
+python3 -m duo_restock uninstall-autostart   # 取消，并停止监控
 ```
 
-定时唤醒后，Mac 要接着电源、保持亮屏或防睡眠，才能一直跑到 10 点。
+日志写在 `monitor.log`，超过 1MB 自动轮换，只保留最近 3 份。
+
+**其他系统，或者临时跑一下**
+
+```bash
+nohup python3 -m duo_restock run --log-file monitor.log > /dev/null 2>&1 &
+```
+
+同一个文件夹里只会有一份监控在跑：已经在运行时再启动，会直接提示并退出，不会多发请求。
+
+Mac 记得插着电源，并在「系统设置 → 电池」里打开「接电源时防止自动睡眠」，晚上不要合盖，不然电脑睡着了就收不到提醒。
 
 ## 常见问题
 

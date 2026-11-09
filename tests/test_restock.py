@@ -147,6 +147,7 @@ class FakeAppleServer:
 
     def close(self):
         self.server.shutdown()
+        self.server.server_close()
         apple.REGIONS.pop("test", None)
 
     def paths(self):
@@ -286,7 +287,9 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("iPhone Duo 512GB Night Sky", self.sent[0].body)
         self.assertEqual(self.sent[0].url, "https://example.com/buy")
         self.assertEqual(m.poll_once(), [])  # still available: no repeat
-        self.assertEqual(m.poll_once(), [])  # sold out: silent by default
+        self.now += 600
+        sold = m.poll_once()  # sold out: recorded, but not pushed by default
+        self.assertEqual([(e["kind"], e["lasted"]) for e in sold], [("sold_out", 600)])
         self.assertEqual(len(self.sent), 1)
 
     def test_first_check_alerts_when_already_in_stock(self):
@@ -415,6 +418,84 @@ class MonitorTests(unittest.TestCase):
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
 
+    def test_hourly_budget_holds_requests_back(self):
+        m = self.monitor(FakeApple(*[payload_with(False)] * 4), max_requests_per_hour=3, interval_seconds=30)
+        start = self.now
+        for _ in range(3):
+            m.step()
+            self.now += 50  # past the 30 s interval plus jitter
+        self.assertEqual(m.snapshot()["checks"], 3)
+        self.assertEqual(m.snapshot()["budget_until"], round(start + 3600))  # shown as soon as it is spent
+        wait = m.step()  # a 4th request within the hour is held back
+        self.assertEqual(m.snapshot()["checks"], 3)
+        self.assertEqual(wait, 60)
+        self.assertEqual(m.snapshot()["budget_until"], round(start + 3600))
+        self.assertFalse(m.check_now()["ok"])
+        self.now = start + 3601
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 4)
+        # Full again until the second request of the first hour ages out.
+        self.assertEqual(m.snapshot()["budget_until"], round(start + 50 + 3600))
+
+    def test_budget_survives_restart(self):
+        m = self.monitor(FakeApple(payload_with(False), payload_with(False)), max_requests_per_hour=2)
+        m.step()
+        self.now += 200
+        m.step()
+        restarted = self.monitor(FakeApple(), max_requests_per_hour=2)
+        self.assertGreater(restarted.step(), 0)
+        self.assertEqual(restarted.snapshot()["checks"], 0)
+        self.assertEqual(restarted.snapshot()["budget"], {"used": 2, "limit": 2})
+
+    def test_history_survives_restart(self):
+        m = self.monitor(FakeApple(payload_with(True), payload_with(False)))
+        m.poll_once()
+        self.now += 120
+        m.poll_once()
+        events = self.monitor(FakeApple()).snapshot()["events"]
+        self.assertEqual([e["kind"] for e in events], ["sold_out", "in_stock"])
+        self.assertEqual(events[0]["lasted"], 120)
+
+    def test_pause_and_check_now(self):
+        m = self.monitor(FakeApple(payload_with(False), payload_with(False)))
+        m.set_paused(True)
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 0)
+        self.assertFalse(m.check_now()["ok"])
+        m.set_paused(False)
+        m.step()
+        self.now += 10
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 1)  # interval not up yet
+        self.assertTrue(m.check_now()["ok"])
+        m.step()
+        self.assertEqual(m.snapshot()["checks"], 2)
+
+    def test_check_now_refused_during_block_cooldown(self):
+        m = self.monitor(FakeApple())
+        m.blocks, m.next_due = 1, self.now + 300
+        self.assertFalse(m.check_now()["ok"])
+        self.assertEqual(m.next_due, self.now + 300)
+
+    def test_alerts_once_when_down_long_and_again_on_recovery(self):
+        def blocked(session, **kw):
+            raise apple.AppleError("HTTP 541 from Apple", status=541)
+
+        m = self.monitor(blocked, alert_after_minutes=10)
+        m.step()
+        self.assertEqual(self.sent, [])
+        self.now += 700
+        m.step()
+        self.now += 700
+        m.step()
+        self.assertEqual(len(self.sent), 1)
+        self.assertIn("中断", self.sent[0].title)
+        m.checker = FakeApple(payload_with(False))
+        self.now += 1300
+        m.step()
+        self.assertEqual(len(self.sent), 2)
+        self.assertIn("恢复", self.sent[1].title)
+
     def test_block_cooldowns_then_error_backoff(self):
         m = self.monitor(FakeApple())
         m.blocks = 1
@@ -476,6 +557,7 @@ class DashboardTests(unittest.TestCase):
 
     def tearDown(self):
         self.server.shutdown()
+        self.server.server_close()
         self.tmp.cleanup()
 
     def post(self, body, content_type="application/json"):
@@ -517,9 +599,85 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(self.monitor.cfg.source.read_text(), before)
         self.assertEqual(self.monitor.cfg.interval, 180)
 
+    def call(self, path, body=None):
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(
+            self.base + path, data=json.dumps(body or {}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=5) as resp:
+                return resp.status, json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
+
+    def test_watch_change_applies_and_is_saved_without_leaking_bark_key(self):
+        body = {
+            "location": "07302",
+            "products": [{"capacity": "1tb", "color": "nightsky"}, {"capacity": "1tb", "color": "starwhite"}],
+            "bark_url": "https://api.day.app/SECRETKEY1234",
+        }
+        code, status = self.call("/api/watch", body)
+        self.assertEqual(code, 200)
+        self.assertEqual(self.monitor.cfg.parts, ["MK1L4LL/A", "MK1J4LL/A"])
+        self.assertEqual(status["location"], "07302")
+        self.assertNotIn("SECRETKEY", json.dumps(status))
+        self.assertEqual(status["watch"]["bark"], "已设置（…1234）")
+        self.assertEqual([o["label"] for o in status["watch"]["options"] if o["selected"]], ["1TB Night Sky", "1TB Star White"])
+        saved = config.load(self.monitor.cfg.source)
+        self.assertEqual((saved.location, saved.parts), ("07302", ["MK1L4LL/A", "MK1J4LL/A"]))
+        self.assertEqual(saved.notify["bark"]["url"], "https://api.day.app/SECRETKEY1234")
+        self.assertIn("# 想监控的型号", self.monitor.cfg.source.read_text())
+
+    def test_watch_rejects_bad_input_without_saving(self):
+        before = self.monitor.cfg.source.read_text()
+        ok = [{"capacity": "1tb", "color": "nightsky"}]
+        self.assertEqual(self.call("/api/watch", {"location": "07302", "products": []})[0], 400)
+        self.assertEqual(self.call("/api/watch", {"location": "", "products": ok})[0], 400)
+        self.assertEqual(self.call("/api/watch", {"location": "1", "products": [{"capacity": "9tb", "color": "red"}]})[0], 400)
+        self.assertEqual(self.call("/api/watch", {"location": "1", "products": ok, "bark_url": "javascript:x"})[0], 400)
+        self.assertEqual(self.monitor.cfg.source.read_text(), before)
+
+    def test_pause_check_now_and_test_notify_endpoints(self):
+        self.monitor.cfg.active_hours = None
+        self.assertTrue(self.call("/api/pause", {"paused": True})[1]["paused"])
+        self.assertFalse(self.call("/api/check-now")[1]["result"]["ok"])
+        self.assertFalse(self.call("/api/pause", {"paused": False})[1]["paused"])
+        self.assertTrue(self.call("/api/check-now")[1]["result"]["ok"])
+        self.monitor.sender = lambda channels, msg: {name: "ok" for name in channels}
+        self.assertEqual(self.call("/api/test-notify")[1]["result"], {"desktop": "ok"})
+
     def test_rejects_form_posts_from_other_sites(self):
         code, _ = self.post(b"interval_seconds=20", content_type="application/x-www-form-urlencoded")
         self.assertEqual(code, 415)
+
+
+class StartupTests(unittest.TestCase):
+    def test_second_copy_cannot_take_the_lock(self):
+        from duo_restock import cli
+
+        with tempfile.TemporaryDirectory() as tmp:
+            first = cli.acquire_lock(Path(tmp) / "monitor.lock")
+            self.assertIsNotNone(first)
+            self.assertIsNone(cli.acquire_lock(Path(tmp) / "monitor.lock"))
+            first.close()
+            again = cli.acquire_lock(Path(tmp) / "monitor.lock")
+            self.assertIsNotNone(again)
+            again.close()
+
+    def test_autostart_plist_restarts_only_after_a_crash(self):
+        from duo_restock import autostart
+
+        plist = autostart.build_plist(Path("/Users/me/duo/config.toml"), python="/usr/bin/python3")
+        self.assertEqual(
+            plist["ProgramArguments"],
+            ["/usr/bin/python3", "-m", "duo_restock", "-c", "/Users/me/duo/config.toml",
+             "run", "--log-file", "/Users/me/duo/monitor.log"],
+        )
+        self.assertEqual(plist["KeepAlive"], {"SuccessfulExit": False})
+        self.assertTrue((Path(plist["WorkingDirectory"]) / "duo_restock").is_dir())
 
 
 class NotifierTests(unittest.TestCase):

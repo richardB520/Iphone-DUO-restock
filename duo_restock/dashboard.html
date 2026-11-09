@@ -52,6 +52,16 @@
     border: 1px solid var(--line); background: var(--bg); color: var(--text); }
   .hint { font-size: 13px; color: var(--warn); }
   .saved { font-size: 13px; color: var(--ok); }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; align-items: center; }
+  button.quiet { background: var(--no-bg); color: var(--text); }
+  input[type=text], input[type=url] { font: inherit; font-size: 14px; padding: 5px 9px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text); min-width: 0; }
+  #bark { flex: 1 1 260px; }
+  .checks { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 12px; flex: 1 1 100%; }
+  details > summary { cursor: pointer; font-size: 17px; font-weight: 600; }
+  details[open] > summary { margin-bottom: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .chip { background: var(--no-bg); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -60,6 +70,12 @@
     <h1>iPhone Duo 补货监控</h1>
     <span class="meta" id="meta">连接中…</span>
   </header>
+  <div class="actions">
+    <button id="pause-btn" class="quiet">暂停监控</button>
+    <button id="check-btn" class="quiet">立即查一次</button>
+    <button id="test-btn" class="quiet">测试推送</button>
+    <span id="action-msg" class="meta"></span>
+  </div>
   <div class="banner" id="banner"></div>
 
   <section class="card">
@@ -87,12 +103,35 @@
   </section>
 
   <section class="card">
+    <details id="watch-card">
+      <summary>监控内容和推送 <span class="meta" id="watch-summary"></span></summary>
+      <div class="setting">
+        <span class="label">邮编/地区</span>
+        <input type="text" id="location" maxlength="100">
+        <span class="meta" id="store-note"></span>
+      </div>
+      <div class="setting">
+        <span class="label">型号</span>
+        <div class="checks" id="models"></div>
+        <span class="meta" id="custom-note"></span>
+      </div>
+      <div class="setting">
+        <span class="label">Bark 地址</span>
+        <input type="url" id="bark" autocomplete="off">
+        <span class="meta" id="channels"></span>
+      </div>
+      <div class="actions"><button id="save-watch">保存</button><span id="watch-msg" class="meta"></span></div>
+    </details>
+  </section>
+
+  <section class="card">
     <h2>门店取货</h2>
     <div class="scroll"><table id="grid"></table></div>
   </section>
 
   <section class="card">
-    <h2>动态 <button id="notify-btn" hidden>开启浏览器提醒</button></h2>
+    <h2>补货记录 <button id="notify-btn" hidden>开启浏览器提醒</button></h2>
+    <div class="chips" id="hours-stats"></div>
     <ul class="events" id="events"></ul>
   </section>
 </main>
@@ -103,6 +142,81 @@ const fmt = (t) => t ? new Date(t * 1000).toLocaleTimeString() : "—";
 let seenEvent = null;
 let settings = null;     // last settings the server confirmed
 let hoursDirty = false;  // user is editing the time inputs; don't overwrite them
+let watchDirty = false;  // same for the "what to watch" form
+let watch = null;
+let paused = false;
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.status);
+  return data;
+}
+function say(id, cls, text) { $(id).className = cls; $(id).textContent = text; }
+const fmtDay = (t) => new Date(t * 1000).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+function duration(sec) {
+  if (sec < 90) return `${Math.round(sec)} 秒`;
+  if (sec < 5400) return `${Math.round(sec / 60)} 分钟`;
+  return `${(sec / 3600).toFixed(1)} 小时`;
+}
+
+$("pause-btn").onclick = async () => {
+  try { render(await post("/api/pause", { paused: !paused })); say("action-msg", "meta", ""); }
+  catch (e) { say("action-msg", "hint", "操作失败：" + e.message); }
+};
+$("check-btn").onclick = async () => {
+  try {
+    const data = await post("/api/check-now");
+    render(data);
+    if (data.result.ok) { say("action-msg", "saved", "✓ 正在查询…"); setTimeout(tick, 1500); }
+    else say("action-msg", "hint", data.result.reason);
+  } catch (e) { say("action-msg", "hint", "操作失败：" + e.message); }
+};
+$("test-btn").onclick = async () => {
+  say("action-msg", "meta", "发送中…");
+  try {
+    const { result } = await post("/api/test-notify");
+    const names = Object.keys(result);
+    if (!names.length) return say("action-msg", "hint", "还没有设置任何推送渠道，在下面「监控内容和推送」里填 Bark 地址");
+    const failed = names.filter((n) => result[n] !== "ok");
+    if (failed.length) say("action-msg", "hint", "发送失败：" + failed.map((n) => `${n}（${result[n]}）`).join("，"));
+    else say("action-msg", "saved", "✓ 已发送到 " + names.join("、") + "，看看收到没有");
+  } catch (e) { say("action-msg", "hint", "操作失败：" + e.message); }
+};
+
+$("watch-card").addEventListener("input", () => { watchDirty = true; });
+$("save-watch").onclick = async () => {
+  const products = [...document.querySelectorAll("#models input:checked")]
+    .map((c) => ({ capacity: c.dataset.capacity, color: c.dataset.color }))
+    .concat(watch.custom.map((c) => ({ part: c.part, name: c.name })));
+  if (!products.length) return say("watch-msg", "hint", "至少选一个型号");
+  const body = { location: $("location").value.trim(), products };
+  if ($("bark").value.trim()) body.bark_url = $("bark").value.trim();
+  say("watch-msg", "meta", "保存中…");
+  try {
+    const data = await post("/api/watch", body);
+    watchDirty = false; $("bark").value = "";
+    render(data);
+    say("watch-msg", "saved", "✓ 已保存并生效，写入了 config.toml");
+    setTimeout(tick, 1500);
+  } catch (e) { say("watch-msg", "hint", "保存失败：" + e.message); }
+};
+
+function renderWatch(w) {
+  watch = w;
+  const chosen = w.options.filter((o) => o.selected).length + w.custom.length;
+  $("watch-summary").textContent = `${w.store || w.location} · ${chosen} 个型号 · ${w.channels.length ? "推送：" + w.channels.join("、") : "未设置推送"}`;
+  if (watchDirty) return;
+  $("location").value = w.location;
+  $("store-note").textContent = w.store ? `配置里指定了门店 ${w.store}，只查这一家` : "";
+  $("models").innerHTML = w.options.map((o) =>
+    `<label><input type="checkbox" data-capacity="${esc(o.capacity)}" data-color="${esc(o.color)}" ${o.selected ? "checked" : ""}> ${esc(o.label)}</label>`).join("");
+  $("custom-note").textContent = w.custom.length ? "另有手动填写的型号：" + w.custom.map((c) => c.name).join("、") : "";
+  $("bark").placeholder = w.bark ? `${w.bark}，留空则不修改` : "https://api.day.app/你的key";
+  $("channels").textContent = "iPhone 上装 Bark App 后，复制它给的地址";
+}
 
 if ("Notification" in window && Notification.permission === "default") {
   $("notify-btn").hidden = false;
@@ -122,11 +236,7 @@ async function saveSettings(change) {
   const msg = $("settings-msg");
   msg.className = "meta"; msg.textContent = "保存中…";
   try {
-    const r = await fetch("/api/settings", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    });
-    const data = await r.json();
-    if (!r.ok) throw new Error(data.error || r.status);
+    const data = await post("/api/settings", body);
     hoursDirty = false;
     render(data);
     const o = data.outcome || {};
@@ -173,7 +283,7 @@ function fillHours(select, from, to, current) {
   select.value = current;
 }
 
-function renderSettings(cfg) {
+function renderSettings(cfg, budget) {
   settings = cfg;
   document.querySelectorAll("#interval-seg button").forEach((b) => {
     b.classList.toggle("on", Number(b.dataset.sec) === cfg.interval_seconds);
@@ -182,8 +292,9 @@ function renderSettings(cfg) {
   const preset = [30, 60, 90, 120, 180, 300, 600].includes(cfg.interval_seconds);
   $("interval-hint").textContent =
     (preset ? "" : `当前：${cfg.interval_seconds} 秒。`) +
-    (cfg.interval_seconds < 150
-      ? `每小时约 ${perHour} 次，Apple 大约每小时只放行 30 次，约 ${Math.round(30 * cfg.interval_seconds / 60)} 分钟后会被拦 15~30 分钟`
+    `本小时已查 ${budget.used} / ${budget.limit} 次。` +
+    (perHour > budget.limit
+      ? `这个间隔约 ${Math.round(budget.limit * cfg.interval_seconds / 60)} 分钟就会用完一小时的额度，之后程序会自动等额度恢复，避免被 Apple 拦截`
       : "");
   if (!hoursDirty) {
     const hours = cfg.active_hours;
@@ -195,13 +306,19 @@ function renderSettings(cfg) {
 }
 
 function render(s) {
-  if (s.settings) renderSettings(s.settings);
+  if (s.settings) renderSettings(s.settings, s.budget);
+  if (s.watch) renderWatch(s.watch);
+  paused = s.paused;
+  $("pause-btn").textContent = paused ? "继续监控" : "暂停监控";
+  $("pause-btn").className = paused ? "" : "quiet";
   const next = s.next_check ? `，下次 ${fmt(s.next_check)}` : "";
   $("meta").textContent = `${s.region.toUpperCase()} · ${s.location} · 已检查 ${s.checks} 次 · 上次 ${fmt(s.last_check)}${next}`;
 
   const available = s.pickup.filter((p) => p.available);
   const banner = $("banner");
-  if (s.sleeping_until) { banner.className = "banner err"; banner.textContent = `🌙 休息中，每天 ${s.active_hours} 监控，${fmt(s.sleeping_until)} 自动开始`; }
+  if (s.paused) { banner.className = "banner err"; banner.textContent = "⏸ 监控已暂停，点「继续监控」恢复"; }
+  else if (s.sleeping_until) { banner.className = "banner err"; banner.textContent = `🌙 休息中，每天 ${s.active_hours} 监控，${fmt(s.sleeping_until)} 自动开始`; }
+  else if (s.budget_until) { banner.className = "banner err"; banner.textContent = `⏳ 这一小时已查 ${s.budget.used} 次，达到上限，${fmt(s.budget_until)} 继续（再查会被 Apple 拦截）`; }
   else if (s.last_error) { banner.className = "banner err"; banner.textContent = "⚠️ " + s.last_error; }
   else if (available.length) { banner.className = "banner ok"; banner.textContent = `✅ 现在有 ${available.length} 处可取货！`; }
   else { banner.className = "banner"; banner.textContent = ""; }
@@ -229,9 +346,18 @@ function render(s) {
     ? s.events.slice(0, 50).map((e) => {
         const icon = {in_stock: "✅", still_in_stock: "🔔", sold_out: "❌"}[e.kind] || "•";
         const where = e.store ? ` @ ${esc(e.store)}` : "";
-        return `<li>${icon} <b>${esc(e.name)}</b>${where} ${esc(e.quote)} <span class="meta">${fmt(e.time)}</span></li>`;
+        const detail = e.kind === "sold_out" ? "售罄" + (e.lasted ? `，这批货留了 ${duration(e.lasted)}` : "") : esc(e.quote);
+        return `<li>${icon} <b>${esc(e.name)}</b>${where} ${detail} <span class="meta">${fmtDay(e.time)}</span></li>`;
       }).join("")
-    : `<li class="empty">还没有补货动态</li>`;
+    : `<li class="empty">还没有补货记录。出现过的补货会一直保存在这里，重启也不会丢</li>`;
+
+  // When does stock tend to appear? Count restocks by hour of day.
+  const byHour = {};
+  s.events.filter((e) => e.kind === "in_stock").forEach((e) => {
+    const h = new Date(e.time * 1000).getHours(); byHour[h] = (byHour[h] || 0) + 1;
+  });
+  $("hours-stats").innerHTML = Object.keys(byHour).sort((a, b) => a - b)
+    .map((h) => `<span class="chip">${h}:00–${h}:59 放货 ${byHour[h]} 次</span>`).join("");
 
   const latest = s.events[0];
   if (latest && seenEvent !== null && latest.time !== seenEvent && latest.kind !== "sold_out") {
